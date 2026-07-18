@@ -1,0 +1,37 @@
+[
+  {
+    "stepTitle": "Uninstall",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "You are about to uninstall VDL. Task records and temporary downloads are kept by default."
+      },
+      {
+        "type": "radio",
+        "field": "wizard_data_action",
+        "label": "Data action",
+        "initValue": "keep",
+        "options": [
+          {
+            "label": "Keep app data for future reinstall",
+            "value": "keep"
+          },
+          {
+            "label": "Delete app data",
+            "value": "delete"
+          }
+        ],
+        "rules": [
+          {
+            "required": true,
+            "message": "Please choose a data action"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "Deleting app data does not delete videos that were moved to other folders."
+      }
+    ]
+  }
+]

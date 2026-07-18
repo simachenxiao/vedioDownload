@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "vdl.Application": {
+            "title": "VDL",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "url": "/app/vdl/",
+            "gatewaySocket": "vdl.sock",
+            "gatewayPrefix": "/app/vdl",
+            "allUsers": true,
+            "control": {"accessPerm": "editable"}
+        }
+    }
+}

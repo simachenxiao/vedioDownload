@@ -1,0 +1,59 @@
+#!/bin/bash
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+
+export TRM_PKGVAR="${TRIM_PKGVAR}"
+export PATH=/var/apps/nodejs_v24/target/bin:$PATH
+CMD="node ${TRIM_APPDEST}/ui/server.js"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    return 1
+}
+
+start_process() {
+    if status; then
+        return 0
+    fi
+    log_msg "Starting VDL ..."
+    bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${PID_FILE}"
+    log_msg "pid=$!"
+}
+
+stop_process() {
+    log_msg "Stopping VDL ..."
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -TERM "${pid}"
+            count=0
+            while kill -0 "${pid}" 2>/dev/null && [ "${count}" -lt 10 ]; do
+                sleep 1
+                count=$((count + 1))
+            done
+            if kill -0 "${pid}" 2>/dev/null; then
+                kill -KILL "${pid}"
+            fi
+        fi
+        rm -f "${PID_FILE}"
+    fi
+}
+
+case "$1" in
+start)   start_process ;;
+stop)    stop_process ;;
+status)  if status; then exit 0; else exit 3; fi ;;
+*)       exit 1 ;;
+esac

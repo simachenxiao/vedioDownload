@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VDL</title>
+  <base href="/app/vdl/">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <img src="images/icon_64.png" alt="" width="36" height="36">
+      <div>
+        <h1>VDL</h1>
+        <p>m3u8 视频下载任务</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="refreshBtn" type="button" title="刷新">刷新</button>
+      <button class="primary" id="openAddTask" type="button">新增任务</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="stats" aria-label="统计">
+      <div class="metric"><label>总数</label><span id="statTotal">0</span></div>
+      <div class="metric"><label>进行中</label><span id="statRunning">0</span></div>
+      <div class="metric"><label>完成</label><span id="statCompleted">0</span></div>
+      <div class="metric"><label>成功</label><span id="statSuccess">0</span></div>
+      <div class="metric danger"><label>失败</label><span id="statFailed">0</span></div>
+    </section>
+
+    <section class="tasks-panel">
+      <div class="panel-head">
+        <div>
+          <h2>下载列表</h2>
+          <p>按任务查看切片进度、状态和输出位置</p>
+        </div>
+        <div class="panel-tools">
+          <button type="button" class="danger-button" id="deleteAllBtn">全部删除</button>
+          <button type="button" id="moveAllBtn">一键移动</button>
+          <button type="button" id="mergeAllBtn">一键合并</button>
+          <select id="filter">
+            <option value="all">全部任务</option>
+            <option value="running">进行中</option>
+            <option value="failed">失败</option>
+            <option value="finished">已完成</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="task-table">
+          <thead>
+            <tr>
+              <th>任务</th>
+              <th>状态</th>
+              <th>切片进度</th>
+              <th>大小</th>
+              <th>创建时间</th>
+              <th>位置</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="taskList"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="taskDialog">
+    <form class="dialog-body" id="taskForm">
+      <div class="dialog-head">
+        <h2>新增下载任务</h2>
+        <button type="button" class="plain" id="closeTaskDialog">关闭</button>
+      </div>
+
+      <label>
+        <span>资源类型</span>
+        <select id="resourceType" name="resourceType">
+          <option value="ruyi">如意资源</option>
+          <option value="other">其他</option>
+        </select>
+      </label>
+
+      <div class="source-panel" id="otherFields">
+        <label>
+          <span>m3u8 地址</span>
+          <input id="m3u8Url" name="m3u8Url" type="url" autocomplete="off">
+        </label>
+        <label>
+          <span>切片 Base 地址</span>
+          <input id="baseUrl" name="baseUrl" type="url" autocomplete="off" placeholder="默认使用 m3u8 地址去掉最后一段">
+        </label>
+        <label>
+          <span>生成视频名称</span>
+          <input id="outputName" name="outputName" type="text" autocomplete="off" placeholder="video.mp4">
+        </label>
+      </div>
+
+      <div class="source-panel" id="ruyiFields">
+        <label>
+          <span>视频地址</span>
+          <input id="videoAddress" name="videoAddress" type="url" autocomplete="off" placeholder="播放器地址或如意 index.m3u8 地址">
+        </label>
+        <label>
+          <span>来源页</span>
+          <select id="sourcePage" name="sourcePage">
+            <option value="auto">自动识别</option>
+            <option value="libretv">LibreTV</option>
+            <option value="kvedio">KVideo</option>
+          </select>
+        </label>
+        <label>
+          <span>下载范围</span>
+          <select id="ruyiMode" name="ruyiMode">
+            <option value="single">单集</option>
+            <option value="all">全集</option>
+          </select>
+        </label>
+        <label id="episodeNameRow">
+          <span>单集名称</span>
+          <input id="episodeName" name="episodeName" type="text" autocomplete="off" placeholder="例如：第01集">
+        </label>
+        <label id="taskConcurrencyRow">
+          <span>任务并发数</span>
+          <input id="taskConcurrency" name="taskConcurrency" type="number" min="1" max="20" value="2">
+        </label>
+      </div>
+
+      <label>
+        <span>临时下载目录</span>
+        <input id="tempRoot" name="tempRoot" type="text" autocomplete="off">
+      </label>
+
+      <div class="form-grid">
+        <label>
+          <span>切片并发</span>
+          <input id="concurrency" name="concurrency" type="number" min="1" max="128" value="32">
+        </label>
+        <label>
+          <span>失败重试</span>
+          <input id="retries" name="retries" type="number" min="0" max="20" value="3">
+        </label>
+      </div>
+
+      <label class="toggle">
+        <input id="autoMerge" name="autoMerge" type="checkbox">
+        <span>下载完成后自动合并</span>
+      </label>
+
+      <p class="message" id="formMessage"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancelTask">取消</button>
+        <button class="primary" type="submit">开始下载</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="moveDialog">
+    <form method="dialog" class="dialog-body" id="moveForm">
+      <div class="dialog-head">
+        <h2>移动视频</h2>
+        <button type="button" class="plain" id="cancelMove">关闭</button>
+      </div>
+      <label>
+        <span>目标目录</span>
+        <div class="input-row">
+          <input id="moveDest" type="text" required>
+          <button type="button" id="openMoveBrowse">选择目录</button>
+        </div>
+      </label>
+      <div class="dialog-actions">
+        <button class="primary" value="confirm" type="submit">移动</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="browseDialog">
+    <div class="dialog-body">
+      <div class="dialog-head">
+        <h2>选择目录</h2>
+        <button type="button" class="plain" id="closeBrowse">关闭</button>
+      </div>
+      <div class="browse-path" id="browsePath">-</div>
+      <div class="browse-list" id="browseList"></div>
+      <div class="dialog-actions">
+        <button type="button" id="browseParent">上一级</button>
+        <button class="primary" type="button" id="selectBrowsePath">选择当前目录</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

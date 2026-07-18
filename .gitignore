@@ -1,0 +1,10 @@
+vdl.fpk
+.runtime/
+.runtime-test/
+data/
+*.log
+*.pid
+*.tmp
+*.part
+node_modules/
+.DS_Store
