@@ -406,7 +406,7 @@ const detectSourcePage = (sourcePage, input) => {
   return input.pageKind;
 };
 
-const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto') => {
+const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'single') => {
   const input = parsePlayerInput(videoAddress);
   const pageType = detectSourcePage(sourcePage, input);
   if (input.episodesParam) {
@@ -424,7 +424,7 @@ const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto') => {
     } catch {}
   }
 
-  if (pageType === 'libretv' && input.hasUrlParam && isValidUrl(input.videoUrl)) {
+  if (mode !== 'all' && pageType === 'libretv' && input.hasUrlParam && isValidUrl(input.videoUrl)) {
     return {
       title: input.title || 'ruyi',
       episodes: [{
@@ -835,7 +835,7 @@ const createTask = async body => {
 
   const videoAddress = String(body.videoAddress || body.m3u8Url || '').trim();
   const mode = body.ruyiMode === 'all' ? 'all' : 'single';
-  const resolved = await resolveRuyiEpisodes(videoAddress, body.sourcePage);
+  const resolved = await resolveRuyiEpisodes(videoAddress, body.sourcePage, mode);
   if (!resolved.episodes.length) throw new Error('no ruyi episodes found');
 
   if (mode === 'single') {
