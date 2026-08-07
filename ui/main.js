@@ -81,12 +81,16 @@ const actionButtons = task => {
   const canResume = ['paused', 'stopped'].includes(task.status);
   const canStop = ['waiting', 'pending', 'downloading', 'paused'].includes(task.status);
   const canRetry = task.status === 'failed' || task.failedSegments > 0;
-  const canMerge = ['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status) && task.doneSegments > 0;
+  const mergeableSegments = (task.doneSegments || 0) - (task.adRemovedSegments || 0);
+  const canMerge = ['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status) && mergeableSegments > 0;
   const canMove = ['success', 'partial'].includes(task.status) && (task.outputPath || task.movedPath);
+  const canRemoveAds = ['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status)
+    && mergeableSegments > 0;
   if (canPause) buttons.push('<button data-action="pause" type="button">暂停</button>');
   if (canResume) buttons.push('<button data-action="resume" type="button">继续</button>');
   if (canStop) buttons.push('<button data-action="stop" class="warn-button" type="button">停止</button>');
   if (canRetry) buttons.push('<button data-action="retry" class="warn-button" type="button">重试</button>');
+  if (canRemoveAds) buttons.push('<button data-action="remove-ads" type="button">去广告</button>');
   if (canMerge) buttons.push('<button data-action="merge" type="button">合并</button>');
   if (canMove) buttons.push('<button data-action="move" type="button">移动</button>');
   buttons.push('<button data-action="delete" class="danger-button" type="button">删除</button>');
@@ -104,6 +108,10 @@ const render = () => {
     const total = task.totalSegments || 0;
     const progress = total ? Math.round((done / total) * 1000) / 10 : 0;
     const pathText = task.movedPath || task.outputPath || task.tempDir || '';
+    const adText = task.adRemovedSegments ? `，已去广告 ${task.adRemovedSegments}` : '';
+    const adScanText = task.adScan
+      ? `<div class="subtle">去广告：样本 ${task.adScan.patterns || 0}，命中 ${task.adScan.matches || 0} 段，移除 ${task.adScan.removedSegments || 0} 片${task.adScan.errors?.length ? `，读取失败 ${task.adScan.errors.length}` : ''}</div>`
+      : '';
     const titleParts = [task.outputName];
     if (task.batchTitle || task.episodeName) titleParts.push([task.batchTitle, task.episodeName].filter(Boolean).join(' / '));
     return `
@@ -112,6 +120,7 @@ const render = () => {
           <div class="task-title" title="${escapeHtml(titleParts.join(' - '))}">${escapeHtml(task.outputName)}</div>
           <div class="task-url" title="${escapeHtml(task.m3u8Url)}">${escapeHtml(task.m3u8Url)}</div>
           ${task.batchTitle || task.episodeName ? `<div class="subtle">${escapeHtml([task.batchTitle, task.episodeName].filter(Boolean).join(' / '))}</div>` : ''}
+          ${adScanText}
           ${task.error ? `<div class="error-line">${escapeHtml(task.error)}</div>` : ''}
         </td>
         <td><span class="badge ${task.status}">${statusText(task.status)}</span></td>
@@ -121,7 +130,7 @@ const render = () => {
             <span>${progress}%</span>
           </div>
           <div class="progress"><span style="width:${Math.min(100, progress)}%"></span></div>
-          <div class="subtle">失败 ${task.failedSegments || 0}</div>
+          <div class="subtle">失败 ${task.failedSegments || 0}${adText}</div>
         </td>
         <td>${fmtBytes(task.downloadedBytes)}</td>
         <td>${fmtTime(task.createdAt)}</td>
@@ -174,6 +183,7 @@ const openTaskDialog = async () => {
   $('#taskConcurrency').value = 2;
   $('#concurrency').value = 6;
   $('#autoMerge').checked = false;
+  $('#removeAds').checked = true;
   syncSourceFields();
   syncRuyiMode();
   formMessage.textContent = '';
@@ -196,6 +206,7 @@ form.addEventListener('submit', async event => {
       concurrency: Number($('#concurrency').value || 32),
       retries: Number($('#retries').value || 3),
       autoMerge: $('#autoMerge').checked,
+      removeAds: $('#removeAds').checked,
     };
     if (resourceType === 'ruyi') {
       body.videoAddress = $('#videoAddress').value.trim();
@@ -233,6 +244,12 @@ taskList.addEventListener('click', async event => {
     if (action === 'resume') await api(`/api/tasks/${id}/resume`, { method: 'POST', body: '{}' });
     if (action === 'stop') await api(`/api/tasks/${id}/stop`, { method: 'POST', body: '{}' });
     if (action === 'retry') await api(`/api/tasks/${id}/retry`, { method: 'POST', body: '{}' });
+    if (action === 'remove-ads') {
+      const data = await api(`/api/tasks/${id}/remove-ads`, { method: 'POST', body: '{}' });
+      const result = data.result || {};
+      const errorText = result.errors?.length ? `，读取失败 ${result.errors.length} 个目录/文件` : '';
+      alert(`去广告扫描完成：样本 ${result.patterns || 0} 个，命中 ${result.matches || 0} 段，移除 ${result.removedSegments || 0} 个切片${errorText}`);
+    }
     if (action === 'merge') await api(`/api/tasks/${id}/merge`, { method: 'POST', body: '{}' });
     if (action === 'move') {
       moveTaskId = id;
@@ -309,21 +326,6 @@ moveForm.addEventListener('submit', async event => {
     alert(e.message);
   }
 });
-
-const copyPath = async path => {
-  try {
-    await navigator.clipboard.writeText(path);
-  } catch {
-    const ta = document.createElement('textarea');
-    ta.value = path;
-    ta.style.position = 'fixed';
-    ta.style.left = '-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    ta.remove();
-  }
-};
 
 $('#openAddTask').addEventListener('click', openTaskDialog);
 $('#resourceType').addEventListener('change', syncSourceFields);

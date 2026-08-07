@@ -1,7 +1,9 @@
 vdl.fpk
 .runtime/
 .runtime-test/
+.runtime-test-*/
 data/
+ad/
 *.log
 *.pid
 *.tmp

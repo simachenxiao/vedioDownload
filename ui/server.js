@@ -27,6 +27,7 @@ const RUYI_API = 'https://cj.rycjapi.com/api.php/provide/vod';
 const DEFAULT_CONFIG = {
   tempRoot: path.join(DATA_DIR, 'temp'),
   outputRoot: path.join(DATA_DIR, 'output'),
+  adRoot: path.join(DATA_DIR, 'ad'),
   concurrency: 32,
   ruyiConcurrency: 6,
   retries: 3,
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG = {
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(DEFAULT_CONFIG.tempRoot, { recursive: true });
 fs.mkdirSync(DEFAULT_CONFIG.outputRoot, { recursive: true });
+fs.mkdirSync(DEFAULT_CONFIG.adRoot, { recursive: true });
 
 let tasks = new Map();
 let active = new Set();
@@ -107,6 +109,12 @@ const safeJoinUnder = (root, ...parts) => {
 const taskDir = task => path.resolve(task.tempDir);
 const segmentsFile = task => path.join(taskDir(task), 'segments.json');
 const localSegmentPath = (task, index) => safeJoinUnder(taskDir(task), 'segments', `${String(index).padStart(6, '0')}.ts`);
+const removedAdPath = (task, patternName, index) => safeJoinUnder(
+  taskDir(task),
+  'removed_ads',
+  sanitizeName(patternName),
+  `${String(index).padStart(6, '0')}.ts`,
+);
 const keyPath = (task, index) => safeJoinUnder(taskDir(task), 'keys', `key_${String(index).padStart(4, '0')}.bin`);
 const manifestPath = task => path.join(taskDir(task), 'local.m3u8');
 const outputPath = task => path.join(taskDir(task), task.outputName);
@@ -127,14 +135,6 @@ const updateTask = task => {
   saveTasks();
   broadcast('task', publicTask(task));
   broadcast('stats', buildStats());
-};
-const bytesText = bytes => {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 };
 
 const loadTasks = () => {
@@ -521,13 +521,170 @@ const hydrateSegments = task => {
 const recalcProgress = task => {
   hydrateSegments(task);
   const total = task.segments.length;
-  const done = task.segments.filter(s => s.status === 'done').length;
+  const done = task.segments.filter(s => s.status === 'done' || s.status === 'ad_removed').length;
   const failed = task.segments.filter(s => s.status === 'failed').length;
   task.totalSegments = total;
   task.doneSegments = done;
   task.failedSegments = failed;
   task.downloadedBytes = task.segments.reduce((sum, s) => sum + (s.size || 0), 0);
   task.progress = total ? Math.round((done / total) * 1000) / 10 : 0;
+};
+
+const fileSha256 = fp => crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex');
+
+const adSourceRoots = () => [...new Set([
+  DEFAULT_CONFIG.adRoot,
+  path.join(TARGET_DIR, 'ad'),
+].map(p => path.resolve(p)))];
+
+const loadAdPatterns = () => {
+  const patterns = [];
+  const errors = [];
+  for (const root of adSourceRoots()) {
+    if (!fs.existsSync(root)) continue;
+    let dirs = [];
+    try {
+      dirs = fs.readdirSync(root, { withFileTypes: true });
+    } catch (e) {
+      errors.push({ path: root, error: e.message });
+      log('read ad root failed:', root, e.message);
+      continue;
+    }
+    for (const dir of dirs) {
+      if (!dir.isDirectory()) continue;
+      const sampleDir = path.join(root, dir.name);
+      let files = [];
+      try {
+        files = fs.readdirSync(sampleDir, { withFileTypes: true })
+          .filter(f => f.isFile() && /^\d+\.ts$/i.test(f.name))
+          .map(f => ({
+            order: parseInt(path.basename(f.name, path.extname(f.name)), 10),
+            path: path.join(sampleDir, f.name),
+          }))
+          .sort((a, b) => a.order - b.order);
+      } catch (e) {
+        errors.push({ path: sampleDir, error: e.message });
+        log('read ad sample failed:', sampleDir, e.message);
+        continue;
+      }
+      if (!files.length) continue;
+      try {
+        patterns.push({
+          name: dir.name,
+          root,
+          segments: files.map(file => {
+            const stat = fs.statSync(file.path);
+            return {
+              order: file.order,
+              path: file.path,
+              size: stat.size,
+              hash: fileSha256(file.path),
+            };
+          }),
+        });
+      } catch (e) {
+        errors.push({ path: sampleDir, error: e.message });
+        log('read ad file failed:', sampleDir, e.message);
+      }
+    }
+  }
+  return { patterns, errors };
+};
+
+const moveAdSegment = (task, seg, patternName) => {
+  const src = localSegmentPath(task, seg.index);
+  const dest = removedAdPath(task, patternName, seg.index);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  if (fs.existsSync(src)) {
+    if (fs.existsSync(dest)) fs.rmSync(dest, { force: true });
+    fs.renameSync(src, dest);
+  }
+  seg.status = 'ad_removed';
+  seg.adPattern = patternName;
+  seg.adRemovedAt = Date.now();
+  seg.adPath = dest;
+  seg.error = '';
+};
+
+const removeMatchedAds = task => {
+  hydrateSegments(task);
+  if (!task.segments.some(s => s.status === 'done')) {
+    return { patterns: 0, matches: 0, removedSegments: 0 };
+  }
+  const { patterns, errors } = loadAdPatterns();
+  const result = { patterns: patterns.length, matches: 0, removedSegments: 0, items: [], errors };
+  if (!patterns.length) {
+    task.adScan = {
+      enabled: task.removeAds === true,
+      scannedAt: Date.now(),
+      patterns: 0,
+      matches: 0,
+      removedSegments: task.adRemovedSegments || 0,
+      errors,
+      message: `no ad samples found in ${adSourceRoots().join(', ')}`,
+    };
+    return result;
+  }
+
+  const hashCache = new Map();
+  const segmentHash = seg => {
+    const fp = localSegmentPath(task, seg.index);
+    if (!fs.existsSync(fp)) return '';
+    const stat = fs.statSync(fp);
+    const cached = hashCache.get(fp);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.hash;
+    const hash = fileSha256(fp);
+    hashCache.set(fp, { size: stat.size, mtimeMs: stat.mtimeMs, hash });
+    return hash;
+  };
+
+  for (let i = 0; i < task.segments.length; i += 1) {
+    for (const pattern of patterns) {
+      if (i + pattern.segments.length > task.segments.length) continue;
+      let matched = true;
+      for (let j = 0; j < pattern.segments.length; j += 1) {
+        const seg = task.segments[i + j];
+        const sample = pattern.segments[j];
+        if (!seg || seg.status !== 'done') {
+          matched = false;
+          break;
+        }
+        const fp = localSegmentPath(task, seg.index);
+        if (!fs.existsSync(fp) || fs.statSync(fp).size !== sample.size || segmentHash(seg) !== sample.hash) {
+          matched = false;
+          break;
+        }
+      }
+      if (!matched) continue;
+      for (let j = 0; j < pattern.segments.length; j += 1) {
+        moveAdSegment(task, task.segments[i + j], pattern.name);
+      }
+      result.matches += 1;
+      result.removedSegments += pattern.segments.length;
+      result.items.push({
+        pattern: pattern.name,
+        startIndex: task.segments[i].index,
+        endIndex: task.segments[i + pattern.segments.length - 1].index,
+        count: pattern.segments.length,
+      });
+      i += pattern.segments.length - 1;
+      break;
+    }
+  }
+
+  task.adRemovedSegments = task.segments.filter(s => s.status === 'ad_removed').length;
+  task.adScan = {
+    enabled: task.removeAds === true,
+    scannedAt: Date.now(),
+    patterns: patterns.length,
+    matches: result.matches,
+    removedSegments: task.adRemovedSegments,
+    items: result.items,
+    errors,
+  };
+  persistSegments(task);
+  recalcProgress(task);
+  return result;
 };
 
 const buildLocalManifest = task => {
@@ -606,6 +763,11 @@ const mergeTask = async task => {
   task.error = '';
   updateTask(task);
   try {
+    if (task.removeAds === true) {
+      removeMatchedAds(task);
+      updateTask(task);
+      if (!task.segments.some(s => s.status === 'done')) throw new Error('no non-ad segments to merge');
+    }
     let out;
     try {
       out = await runFfmpeg(task);
@@ -634,7 +796,7 @@ const canMergeTask = task => {
   if (!['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status)) return false;
   hydrateSegments(task);
   recalcProgress(task);
-  return task.doneSegments > 0;
+  return task.segments.some(s => s.status === 'done');
 };
 
 const startMergeTask = task => {
@@ -672,7 +834,7 @@ const runDownload = async task => {
       while (cursor < task.segments.length) {
         if (control.paused || control.stopped) break;
         const seg = task.segments[cursor++];
-        if (!seg || seg.status === 'done') continue;
+        if (!seg || seg.status === 'done' || seg.status === 'ad_removed') continue;
         const dest = localSegmentPath(task, seg.index);
         if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
           seg.status = 'done';
@@ -733,6 +895,10 @@ const runDownload = async task => {
       updateTask(task);
       return;
     }
+    if (task.removeAds === true) {
+      removeMatchedAds(task);
+      updateTask(task);
+    }
     if (task.autoMerge) await mergeTask(task);
     else {
       task.status = 'downloaded';
@@ -787,6 +953,9 @@ const createM3u8Task = async (body, options = {}) => {
     tempDir,
     outputName,
     autoMerge: body.autoMerge === true,
+    removeAds: body.removeAds === true,
+    adRemovedSegments: 0,
+    adScan: null,
     concurrency: parseInt(
       body.concurrency || (options.resourceType === 'ruyi' ? DEFAULT_CONFIG.ruyiConcurrency : DEFAULT_CONFIG.concurrency),
       10,
@@ -960,32 +1129,20 @@ const resumeTask = task => {
   return true;
 };
 
-const moveTask = (task, destDir) => {
-  const src = task.movedPath || task.outputPath || outputPath(task);
-  if (!src || !fs.existsSync(src)) throw new Error('output video does not exist');
-  const targetDir = path.resolve(String(destDir || '').trim());
-  if (!targetDir || targetDir === path.parse(targetDir).root) throw new Error('invalid target directory');
-  fs.mkdirSync(targetDir, { recursive: true });
-  const target = path.join(targetDir, path.basename(src));
-  if (path.resolve(src) === path.resolve(target)) return target;
-  try {
-    fs.renameSync(src, target);
-  } catch (e) {
-    if (e.code !== 'EXDEV') throw e;
-    fs.copyFileSync(src, target);
-    const srcSize = fs.statSync(src).size;
-    const targetSize = fs.statSync(target).size;
-    if (srcSize !== targetSize) {
-      try { fs.rmSync(target, { force: true }); } catch {}
-      throw new Error(`copy failed: size mismatch (${srcSize} != ${targetSize})`);
-    }
-    fs.rmSync(src, { force: true });
+const removeAdsFromTask = task => {
+  if (active.has(task.id) || ['downloading', 'merging', 'moving'].includes(task.status)) {
+    throw new Error('task is busy');
   }
-  task.movedPath = target;
-  task.outputPath = '';
-  task.status = 'moved';
+  if (!['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status)) {
+    throw new Error('task is not ready to remove ads');
+  }
+  hydrateSegments(task);
+  if (!task.segments.some(s => s.status === 'done')) throw new Error('no downloaded segments to scan');
+  task.removeAds = true;
+  task.error = '';
+  const result = removeMatchedAds(task);
   updateTask(task);
-  return target;
+  return result;
 };
 
 const moveTaskAsync = async (task, destDir, previousStatus = task.status) => {
@@ -1241,6 +1398,10 @@ const handle = async (req, res) => {
         recalcProgress(task);
         startMergeTask(task);
         return sendJSON(res, 202, { ok: true, task: publicTask(task) });
+      }
+      if (req.method === 'POST' && action === 'remove-ads') {
+        const result = removeAdsFromTask(task);
+        return sendJSON(res, 200, { ok: true, result, task: publicTask(task) });
       }
       if (req.method === 'POST' && action === 'move') {
         const body = await readBody(req);
