@@ -1,5 +1,6 @@
 vdl.fpk
 .runtime/
+.runtime-*/
 .runtime-test/
 .runtime-test-*/
 data/

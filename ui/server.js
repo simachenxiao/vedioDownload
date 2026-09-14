@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = __dirname;
@@ -22,7 +22,12 @@ const SOCK_PATH = path.join(TARGET_DIR, 'vdl.sock');
 const PORT = parseInt(process.env.PORT || '0', 10) || 9635;
 const BASE_PATH = '/app/vdl';
 const FFMPEG_BIN = process.env.FFMPEG_BIN || '/usr/bin/ffmpeg';
-const RUYI_API = 'https://cj.rycjapi.com/api.php/provide/vod';
+// 采集站 API：key 与播放器 URL 的 source 参数对应
+const CMS_APIS = {
+  ruyi: 'https://cj.rycjapi.com/api.php/provide/vod',
+  bfzy: 'https://bfzyapi.com/api.php/provide/vod',
+};
+const isCmsType = type => type === 'ruyi' || type === 'bfzy';
 
 const DEFAULT_CONFIG = {
   tempRoot: path.join(DATA_DIR, 'temp'),
@@ -34,6 +39,7 @@ const DEFAULT_CONFIG = {
   requestRetries: 3,
   requestTimeoutMs: 60000,
 };
+const cmsConcurrencyFor = type => (isCmsType(type) ? DEFAULT_CONFIG.ruyiConcurrency : DEFAULT_CONFIG.concurrency);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(DEFAULT_CONFIG.tempRoot, { recursive: true });
@@ -170,7 +176,7 @@ const fetchText = async (url, retries = DEFAULT_CONFIG.requestRetries) => {
     const res = await fetch(url, {
       signal: ctrl.signal,
       headers: {
-        'User-Agent': 'VDL/0.1.0',
+        'User-Agent': 'VDL/0.2.0',
         'Accept': '*/*',
       },
       redirect: 'follow',
@@ -297,7 +303,7 @@ const parseM3u8 = async (m3u8Url, baseUrlInput) => {
 
 const parseBaseForTask = task => {
   if (task.baseUrlOverride) return task.baseUrlOverride;
-  return task.resourceType === 'ruyi' ? null : task.baseUrl;
+  return isCmsType(task.resourceType) ? null : task.baseUrl;
 };
 
 const ensureTaskParsed = async task => {
@@ -379,7 +385,7 @@ const parseEpisodeList = (playUrl, playFrom = '', preferredSource = '') => {
   let selected = sources[0] || '';
   const preferred = froms.findIndex(name => String(name || '').toLowerCase() === String(preferredSource || '').toLowerCase());
   const direct = sources.find(source => extractM3u8Links(source).length > 0);
-  const knownDirect = froms.findIndex(name => ['rym3u8', 'm3u8'].includes(String(name || '').toLowerCase()));
+  const knownDirect = froms.findIndex(name => ['rym3u8', 'bfzym3u8', 'm3u8'].includes(String(name || '').toLowerCase()));
   if (preferred >= 0 && sources[preferred] && extractM3u8Links(sources[preferred]).length > 0) selected = sources[preferred];
   else if (knownDirect >= 0 && sources[knownDirect]) selected = sources[knownDirect];
   else if (direct) selected = direct;
@@ -406,7 +412,7 @@ const detectSourcePage = (sourcePage, input) => {
   return input.pageKind;
 };
 
-const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'single') => {
+const resolveCmsEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'single', resourceType = 'ruyi') => {
   const input = parsePlayerInput(videoAddress);
   const pageType = detectSourcePage(sourcePage, input);
   if (input.episodesParam) {
@@ -414,7 +420,7 @@ const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'si
       const arr = JSON.parse(decodeURIComponent(input.episodesParam));
       if (Array.isArray(arr) && arr.length) {
         return {
-          title: input.title || 'ruyi',
+          title: input.title || resourceType,
           episodes: arr.filter(isValidUrl).map((url, index) => ({
             name: `第${String(index + 1).padStart(2, '0')}集`,
             url,
@@ -426,7 +432,7 @@ const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'si
 
   if (mode !== 'all' && pageType === 'libretv' && input.hasUrlParam && isValidUrl(input.videoUrl)) {
     return {
-      title: input.title || 'ruyi',
+      title: input.title || resourceType,
       episodes: [{
         name: `第${String(input.index + 1).padStart(2, '0')}集`,
         url: input.videoUrl,
@@ -434,18 +440,21 @@ const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'si
     };
   }
 
-  if (input.id && (!input.source || input.source === 'ruyi')) {
-    const detail = await fetchJson(`${RUYI_API}?ac=videolist&ids=${encodeURIComponent(input.id)}`);
+  const sourceKey = String(input.source || '').toLowerCase();
+  let apiBase = CMS_APIS[sourceKey] || null;
+  if (!apiBase && isCmsType(resourceType) && (!sourceKey || isCmsType(sourceKey))) apiBase = CMS_APIS[resourceType];
+  if (input.id && apiBase) {
+    const detail = await fetchJson(`${apiBase}?ac=videolist&ids=${encodeURIComponent(input.id)}`);
     const item = Array.isArray(detail.list) ? detail.list[0] : null;
     if (item?.vod_play_url) {
       const episodes = parseEpisodeList(item.vod_play_url, item.vod_play_from, input.source);
-      if (episodes.length) return { title: item.vod_name || input.title || 'ruyi', episodes };
+      if (episodes.length) return { title: item.vod_name || input.title || resourceType, episodes };
     }
   }
 
   if (isValidUrl(input.videoUrl)) {
     return {
-      title: input.title || 'ruyi',
+      title: input.title || resourceType,
       episodes: [{
         name: `第${String(input.index + 1).padStart(2, '0')}集`,
         url: input.videoUrl,
@@ -456,7 +465,7 @@ const resolveRuyiEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'si
   const page = await fetchText(input.rawUrl);
   const links = extractM3u8Links(page.text);
   return {
-    title: input.title || 'ruyi',
+    title: input.title || resourceType,
     episodes: links.map((url, index) => ({
       name: `第${String(index + 1).padStart(2, '0')}集`,
       url,
@@ -485,7 +494,7 @@ const downloadFile = async (url, dest, control = null) => {
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'VDL/0.1.0' },
+      headers: { 'User-Agent': 'VDL/0.2.0' },
       redirect: 'follow',
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -956,10 +965,7 @@ const createM3u8Task = async (body, options = {}) => {
     removeAds: body.removeAds === true,
     adRemovedSegments: 0,
     adScan: null,
-    concurrency: parseInt(
-      body.concurrency || (options.resourceType === 'ruyi' ? DEFAULT_CONFIG.ruyiConcurrency : DEFAULT_CONFIG.concurrency),
-      10,
-    ) || (options.resourceType === 'ruyi' ? DEFAULT_CONFIG.ruyiConcurrency : DEFAULT_CONFIG.concurrency),
+    concurrency: parseInt(body.concurrency || cmsConcurrencyFor(options.resourceType), 10) || cmsConcurrencyFor(options.resourceType),
     retries: parseInt(body.retries || DEFAULT_CONFIG.retries, 10) || DEFAULT_CONFIG.retries,
     status: options.initialStatus || 'pending',
     progress: 0,
@@ -1000,11 +1006,11 @@ const createM3u8Task = async (body, options = {}) => {
 
 const createTask = async body => {
   const resourceType = String(body.resourceType || 'other');
-  if (resourceType !== 'ruyi') return { task: await createM3u8Task(body) };
+  if (!isCmsType(resourceType)) return { task: await createM3u8Task(body) };
 
   const videoAddress = String(body.videoAddress || body.m3u8Url || '').trim();
   const mode = body.ruyiMode === 'all' ? 'all' : 'single';
-  const resolved = await resolveRuyiEpisodes(videoAddress, body.sourcePage, mode);
+  const resolved = await resolveCmsEpisodes(videoAddress, body.sourcePage, mode, resourceType);
   if (!resolved.episodes.length) throw new Error('no ruyi episodes found');
 
   if (mode === 'single') {
@@ -1015,7 +1021,7 @@ const createTask = async body => {
       task: await createM3u8Task(body, {
         m3u8Url: episode.url,
         outputName: name || body.outputName || episode.name,
-        resourceType: 'ruyi',
+        resourceType,
         episodeName: name || episode.name,
         episodeIndex: resolved.episodes.indexOf(episode),
       }),
@@ -1033,7 +1039,7 @@ const createTask = async body => {
     const task = await createM3u8Task(body, {
       m3u8Url: episode.url,
       outputName,
-      resourceType: 'ruyi',
+      resourceType,
       batchId,
       batchTitle: resolved.title || '',
       batchConcurrency,
@@ -1463,4 +1469,13 @@ const main = () => {
   process.on('SIGINT', shutdown);
 };
 
-main();
+export {
+  CMS_APIS,
+  isCmsType,
+  parseM3u8,
+  parseEpisodeList,
+  resolveCmsEpisodes,
+  createTask,
+};
+
+if (process.env.VDL_NO_START !== '1') main();

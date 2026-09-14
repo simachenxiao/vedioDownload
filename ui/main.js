@@ -150,12 +150,12 @@ const loadDefaults = async () => {
 
 const syncSourceFields = () => {
   const type = $('#resourceType').value;
-  const isRuyi = type === 'ruyi';
-  $('#ruyiFields').hidden = !isRuyi;
-  $('#otherFields').hidden = isRuyi;
-  $('#videoAddress').required = isRuyi;
-  $('#m3u8Url').required = !isRuyi;
-  if (isRuyi && (!$('#concurrency').value || Number($('#concurrency').value) > 12)) {
+  const isCms = type === 'ruyi' || type === 'bfzy';
+  $('#ruyiFields').hidden = !isCms;
+  $('#otherFields').hidden = isCms;
+  $('#videoAddress').required = isCms;
+  $('#m3u8Url').required = !isCms;
+  if (isCms && (!$('#concurrency').value || Number($('#concurrency').value) > 12)) {
     $('#concurrency').value = 6;
   }
 };
@@ -208,7 +208,7 @@ form.addEventListener('submit', async event => {
       autoMerge: $('#autoMerge').checked,
       removeAds: $('#removeAds').checked,
     };
-    if (resourceType === 'ruyi') {
+    if (resourceType === 'ruyi' || resourceType === 'bfzy') {
       body.videoAddress = $('#videoAddress').value.trim();
       body.sourcePage = $('#sourcePage').value;
       body.ruyiMode = $('#ruyiMode').value;

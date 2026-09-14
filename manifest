@@ -1,5 +1,5 @@
 appname               = vdl
-version               = 0.1.0
+version               = 0.2.0
 display_name          = VDL
 desc                  = 飞牛 NAS m3u8 视频下载工具，支持切片下载、失败重试、手动合并、成品移动和任务统计
 platform              = all
