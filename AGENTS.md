@@ -22,15 +22,31 @@ config/resource       资源声明（空对象）
 ui/config             桌面入口（iframe，/app/vdl/，gatewaySocket vdl.sock）
 wizard/uninstall      卸载向导（保留/删除数据）
 ad/NN/*.ts            去广告样本（git 忽略，且默认不打进 fpk）
-ui/server.js          后端全部逻辑（HTTP + Unix socket、REST、SSE、下载/合并/去广告/移动）
+ui/server.js          后端全部逻辑（HTTP + Unix socket、REST、SSE、下载/合并/去广告/移动/播放）
 ui/index.html         单页界面
 ui/main.js            前端逻辑（fetch + SSE + 渲染）
 ui/styles.css         样式
+tests/                回归测试：run.mjs 执行器 + harness.mjs 工具 + cases/ 用例 + README.md 用例清单
+tests/tools/          辅助脚本（如未引用声明扫描 dead-code.mjs）
 vdl.fpk               构建产物（git 忽略）
-.runtime-*/           本地测试临时目录（git 忽略）
+.runtime-*/           本地测试临时目录（git 忽略；用例现场在 .runtime-tests/）
 ```
 
 ## 常用命令
+
+### 回归测试（改动后必跑）
+
+```bash
+npm test                    # 全量回归用例（11 个用例 / 130+ 断言，约 30s）
+npm run test:list           # 列出用例清单
+node tests/run.mjs --only=03,06        # 只跑指定用例
+node tests/run.mjs --filter=播放 --verbose   # 按关键字过滤并打印每条断言
+```
+
+- 用例清单、手动用例、改动流程见 **`tests/README.md`**。
+- **规则：新增/修改功能必须同步更新 `tests/cases/` 与 `tests/README.md` 的清单和变更记录，然后跑全量用例。**
+- 用例自带临时数据目录与本地假 CDN，不依赖外网；默认让 `FFMPEG_BIN` 指向不存在路径以稳定走 `concat` 回退（真实 ffmpeg 由用例 11 覆盖，缺失时自动 SKIP）。
+- 提交前建议另跑 `node tests/tools/dead-code.mjs` 检查未被引用的顶层声明。
 
 ### 本地运行（开发）
 
@@ -94,6 +110,7 @@ fnpack build -d .                              # 其他平台
 | GET | `/api/tasks/:id` | 单任务（含切片进度） |
 | POST | `/api/tasks` | 新建任务（见下方资源类型） |
 | POST | `/api/tasks/:id/{retry,pause,resume,stop,merge,remove-ads,move}` | 任务操作 |
+| GET/HEAD | `/api/tasks/:id/video` | 播放成品（支持 `Range`，206/416；取 `movedPath`/`outputPath`） |
 | DELETE | `/api/tasks/:id` | 删除任务并清理临时目录（已移动的成品不删） |
 | POST | `/api/tasks/bulk/{delete,move,merge}` | 批量操作 |
 | GET | `/api/browse?path=` | 浏览目录（移动目标选择用） |
@@ -108,6 +125,7 @@ fnpack build -d .                              # 其他平台
 
 - 新增采集站：在 `CMS_APIS` 加一项、`isCmsType` 同步、前端 `resourceType` 下拉加选项即可，其余逻辑复用 `resolveCmsEpisodes`。
 - 单集：LibreTV 播放器 URL 的 `url` 参数直接作为源；全集：按 `id` 调采集站 `ac=videolist&ids=` 拿 `vod_play_url` 解析。
+- **部分**：先按全集解析出完整剧集列表，再用 `episodeSelect`（1-based 集号表达式：`1;2;4`、`2-6`、`1,3-5`，支持 `; , ， ； 空格` 与 `- ~`）取子集，`parseEpisodeSelection(expression, total)` 负责校验（超总集数报错），仍走同一 `batchId` 批次排队；`episodeIndex` 保留原集号。
 - 采集站任务 `baseUrlOverride` 为空，切片 base 由 m3u8 自身位置推导。
 
 ### 任务状态机
@@ -129,10 +147,9 @@ fnpack build -d .                              # 其他平台
 - 前端 `API_BASE` 需兼容 `/app/vdl` 前缀；新增接口记得同步 `ui/main.js` 与 SSE 刷新。
 - 提交信息用英文、祈使句（如 `Add ...` / `Fix ...`）。
 
-## 验证清单（改动后建议照做）
+## 验证清单（改动后必做）
 
-1. `node --check` 两个 JS 文件。
-2. 用 `TRM_PKGVAR=<临时目录>` 起服务，`GET /api/health` 正常。
-3. 解析：用 `VDL_NO_START=1` import `resolveCmsEpisodes` 验证单集/全集集数（参考 `.runtime-bfzy/test-resolve.mjs` 的写法）。
-4. 实际下载一个小任务，确认 `downloading → success`、`mergeEngine`，并用 ffmpeg 校验成品流信息。
-5. `fnpack build -d .`，解包 `vdl.fpk` 核对 `manifest` 版本、`app.tgz` 内容与是否夹带 `ad/`。
+1. **`npm test` 全量用例全绿**（含本次新增/修改功能的用例）；接口/功能变化要同步改 `tests/cases/` 与 `tests/README.md` 清单。
+2. 三处版本号保持一致：`manifest`、`package.json`、`ui/server.js` 的 `VERSION`（用例 01 会校验）。
+3. 涉及 UI 的手动用例：弹窗播放、播放按钮显隐、SSE 实时刷新、目录选择器（见 `tests/README.md` 手动用例表）。
+4. `fnpack build -d .`，解包 `vdl.fpk` 核对 `manifest` 版本、`app.tgz` 内容与是否夹带 `ad/`、`.runtime-*/`。

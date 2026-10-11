@@ -12,6 +12,10 @@ const moveDest = $('#moveDest');
 const browseDialog = $('#browseDialog');
 const browsePath = $('#browsePath');
 const browseList = $('#browseList');
+const playerDialog = $('#playerDialog');
+const playerVideo = $('#playerVideo');
+const playerTitle = $('#playerTitle');
+const playerMessage = $('#playerMessage');
 let tasks = [];
 let moveTaskId = '';
 let moveMode = 'single';
@@ -86,6 +90,8 @@ const actionButtons = task => {
   const canMove = ['success', 'partial'].includes(task.status) && (task.outputPath || task.movedPath);
   const canRemoveAds = ['downloaded', 'failed', 'partial', 'stopped', 'paused'].includes(task.status)
     && mergeableSegments > 0;
+  const canPlay = ['success', 'partial', 'moved'].includes(task.status) && (task.outputPath || task.movedPath);
+  if (canPlay) buttons.push('<button data-action="play" type="button">播放</button>');
   if (canPause) buttons.push('<button data-action="pause" type="button">暂停</button>');
   if (canResume) buttons.push('<button data-action="resume" type="button">继续</button>');
   if (canStop) buttons.push('<button data-action="stop" class="warn-button" type="button">停止</button>');
@@ -158,12 +164,17 @@ const syncSourceFields = () => {
   if (isCms && (!$('#concurrency').value || Number($('#concurrency').value) > 12)) {
     $('#concurrency').value = 6;
   }
+  syncRuyiMode();
 };
 
 const syncRuyiMode = () => {
-  const all = $('#ruyiMode').value === 'all';
-  $('#episodeNameRow').hidden = all;
-  $('#taskConcurrencyRow').hidden = !all;
+  const mode = $('#ruyiMode').value;
+  const cmsVisible = !$('#ruyiFields').hidden;
+  $('#episodeNameRow').hidden = mode !== 'single';
+  $('#episodeSelectRow').hidden = mode !== 'partial';
+  $('#taskConcurrencyRow').hidden = mode === 'single';
+  // 面板隐藏时不能保留 required，否则会阻塞「其他」类型的提交
+  $('#episodeSelect').required = cmsVisible && mode === 'partial';
 };
 
 const loadStats = async () => setStats(await api('/api/stats'));
@@ -181,7 +192,6 @@ const openTaskDialog = async () => {
   $('#resourceType').value = 'ruyi';
   $('#ruyiMode').value = 'single';
   $('#taskConcurrency').value = 2;
-  $('#concurrency').value = 6;
   $('#autoMerge').checked = false;
   $('#removeAds').checked = true;
   syncSourceFields();
@@ -213,6 +223,7 @@ form.addEventListener('submit', async event => {
       body.sourcePage = $('#sourcePage').value;
       body.ruyiMode = $('#ruyiMode').value;
       body.episodeName = $('#episodeName').value.trim();
+      body.episodeSelect = $('#episodeSelect').value.trim();
       body.taskConcurrency = Number($('#taskConcurrency').value || 1);
     } else {
       body.m3u8Url = $('#m3u8Url').value.trim();
@@ -251,6 +262,10 @@ taskList.addEventListener('click', async event => {
       alert(`去广告扫描完成：样本 ${result.patterns || 0} 个，命中 ${result.matches || 0} 段，移除 ${result.removedSegments || 0} 个切片${errorText}`);
     }
     if (action === 'merge') await api(`/api/tasks/${id}/merge`, { method: 'POST', body: '{}' });
+    if (action === 'play') {
+      openPlayer(task);
+      return;
+    }
     if (action === 'move') {
       moveTaskId = id;
       moveMode = 'single';
@@ -327,7 +342,41 @@ moveForm.addEventListener('submit', async event => {
   }
 });
 
+const videoUrl = id => `${API_BASE}/api/tasks/${id}/video`;
+
+const openPlayer = task => {
+  playerTitle.textContent = task.outputName || '播放视频';
+  playerMessage.textContent = '';
+  playerMessage.classList.remove('error');
+  playerVideo.src = videoUrl(task.id);
+  playerDialog.showModal();
+  playerVideo.play().catch(() => {});
+};
+
+const resetPlayer = () => {
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  playerMessage.textContent = '';
+  playerMessage.classList.remove('error');
+};
+
+const closePlayer = () => {
+  resetPlayer();
+  if (playerDialog.open) playerDialog.close();
+};
+
+playerDialog.addEventListener('close', resetPlayer);
+playerDialog.addEventListener('cancel', resetPlayer);
+playerVideo.addEventListener('error', () => {
+  if (!playerVideo.getAttribute('src')) return;
+  playerMessage.textContent = '视频加载失败：文件可能已被移动或删除，或格式不被浏览器支持。';
+  playerMessage.classList.add('error');
+});
+
 $('#openAddTask').addEventListener('click', openTaskDialog);
+$('#closePlayer').addEventListener('click', closePlayer);
+$('#closePlayerBtn').addEventListener('click', closePlayer);
 $('#resourceType').addEventListener('change', syncSourceFields);
 $('#ruyiMode').addEventListener('change', syncRuyiMode);
 $('#closeTaskDialog').addEventListener('click', () => taskDialog.close());
@@ -406,6 +455,10 @@ const connectEvents = () => {
     setTimeout(connectEvents, 3000);
   };
 };
+
+window.addEventListener('beforeunload', () => {
+  if (playerDialog.open) closePlayer();
+});
 
 await loadDefaults();
 await refresh();

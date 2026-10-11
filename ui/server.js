@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.4';
+const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = __dirname;
@@ -124,6 +125,24 @@ const removedAdPath = (task, patternName, index) => safeJoinUnder(
 const keyPath = (task, index) => safeJoinUnder(taskDir(task), 'keys', `key_${String(index).padStart(4, '0')}.bin`);
 const manifestPath = task => path.join(taskDir(task), 'local.m3u8');
 const outputPath = task => path.join(taskDir(task), task.outputName);
+const fileSize = fp => {
+  try {
+    const stat = fs.statSync(fp);
+    return stat.isFile() ? stat.size : 0;
+  } catch {
+    return 0;
+  }
+};
+// 成品的实际落盘位置：优先已移动的文件，其次合并输出
+const existingVideoPath = task => {
+  const fp = task.movedPath || task.outputPath || outputPath(task);
+  if (!fp) return '';
+  try {
+    return fs.statSync(fp).isFile() ? fp : '';
+  } catch {
+    return '';
+  }
+};
 const publicTask = task => {
   const { segments, keys, ...rest } = task;
   return rest;
@@ -170,26 +189,26 @@ const fetchErrorMessage = err => {
 const fetchText = async (url, retries = DEFAULT_CONFIG.requestRetries) => {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), DEFAULT_CONFIG.requestTimeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: {
-        'User-Agent': 'VDL/0.2.0',
-        'Accept': '*/*',
-      },
-      redirect: 'follow',
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return { text: await res.text(), finalUrl: res.url || url };
-  } catch (e) {
-    lastError = e;
-    if (attempt >= retries) break;
-    await sleep(600 * (attempt + 1));
-  } finally {
-    clearTimeout(timer);
-  }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), DEFAULT_CONFIG.requestTimeoutMs);
+    try {
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: '*/*',
+        },
+        redirect: 'follow',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { text: await res.text(), finalUrl: res.url || url };
+    } catch (e) {
+      lastError = e;
+      if (attempt >= retries) break;
+      await sleep(600 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+    }
   }
   throw new Error(`fetch failed after ${retries + 1} attempts: ${fetchErrorMessage(lastError)}`);
 };
@@ -249,12 +268,7 @@ const parseM3u8 = async (m3u8Url, baseUrlInput) => {
   let currentKey = null;
   let initMap = null;
   let duration = 0;
-  let sequence = 0;
   for (const line of lines) {
-    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
-      sequence = parseInt(line.substring('#EXT-X-MEDIA-SEQUENCE:'.length), 10) || 0;
-      continue;
-    }
     if (line.startsWith('#EXT-X-TARGETDURATION:')) continue;
     if (line.startsWith('#EXTINF:')) {
       duration = parseFloat(line.substring('#EXTINF:'.length).split(',')[0]) || 0;
@@ -285,7 +299,6 @@ const parseM3u8 = async (m3u8Url, baseUrlInput) => {
     if (line.startsWith('#')) continue;
     segments.push({
       index: segments.length,
-      sequence: sequence + segments.length,
       uri: absoluteUrl(baseUrl, line),
       duration,
       keyId: currentKey?.id || '',
@@ -473,6 +486,32 @@ const resolveCmsEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'sin
   };
 };
 
+// 解析「部分下载」集数表达式：支持 1;2;4、2-6、1,3-5、2~6、空格分隔，返回升序去重的 1-based 集号
+const parseEpisodeSelection = (expression, total) => {
+  const tokens = String(expression ?? '').replace(/\s*([-~])\s*/g, '$1').trim().split(/[;；,，\s]+/).filter(Boolean);
+  if (!tokens.length) throw new Error('请填写要下载的集数，例如 1;2;4 或 2-6');
+  const picked = new Set();
+  for (const token of tokens) {
+    const range = /^(\d+)\s*[-~]\s*(\d+)$/.exec(token);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (!start || !end) throw new Error(`集数必须从 1 开始：${token}`);
+      if (start > end) throw new Error(`范围起始不能大于结束：${token}`);
+      for (let number = start; number <= end; number += 1) picked.add(number);
+      continue;
+    }
+    if (!/^\d+$/.test(token)) throw new Error(`无法识别的集数写法：${token}`);
+    const number = Number(token);
+    if (!number) throw new Error(`集数必须从 1 开始：${token}`);
+    picked.add(number);
+  }
+  const numbers = [...picked].sort((a, b) => a - b);
+  const max = numbers[numbers.length - 1];
+  if (max > total) throw new Error(`选择的集数超出范围：该剧共 ${total} 集，填写的最大集号为 ${max}`);
+  return numbers;
+};
+
 const markInterruptedSegmentsPending = task => {
   hydrateSegments(task);
   for (const seg of task.segments) {
@@ -494,7 +533,7 @@ const downloadFile = async (url, dest, control = null) => {
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'VDL/0.2.0' },
+      headers: { 'User-Agent': USER_AGENT },
       redirect: 'follow',
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -617,7 +656,8 @@ const moveAdSegment = (task, seg, patternName) => {
 
 const removeMatchedAds = task => {
   hydrateSegments(task);
-  if (!task.segments.some(s => s.status === 'done')) {
+  const doneAtScan = task.segments.filter(s => s.status === 'done').length;
+  if (!doneAtScan) {
     return { patterns: 0, matches: 0, removedSegments: 0 };
   }
   const { patterns, errors } = loadAdPatterns();
@@ -626,6 +666,7 @@ const removeMatchedAds = task => {
     task.adScan = {
       enabled: task.removeAds === true,
       scannedAt: Date.now(),
+      scannedDoneSegments: doneAtScan,
       patterns: 0,
       matches: 0,
       removedSegments: task.adRemovedSegments || 0,
@@ -635,16 +676,24 @@ const removeMatchedAds = task => {
     return result;
   }
 
-  const hashCache = new Map();
-  const segmentHash = seg => {
+  // 同一次扫描内按切片缓存大小与哈希，避免重复 stat / 重复读盘
+  const segmentInfoCache = new Map();
+  const segmentInfo = seg => {
+    if (segmentInfoCache.has(seg.index)) return segmentInfoCache.get(seg.index);
     const fp = localSegmentPath(task, seg.index);
-    if (!fs.existsSync(fp)) return '';
-    const stat = fs.statSync(fp);
-    const cached = hashCache.get(fp);
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.hash;
-    const hash = fileSha256(fp);
-    hashCache.set(fp, { size: stat.size, mtimeMs: stat.mtimeMs, hash });
-    return hash;
+    let info = null;
+    try {
+      const stat = fs.statSync(fp);
+      if (stat.isFile()) info = { fp, size: stat.size, hash: '' };
+    } catch {}
+    segmentInfoCache.set(seg.index, info);
+    return info;
+  };
+  const segmentHash = seg => {
+    const info = segmentInfo(seg);
+    if (!info) return '';
+    if (!info.hash) info.hash = fileSha256(info.fp);
+    return info.hash;
   };
 
   for (let i = 0; i < task.segments.length; i += 1) {
@@ -658,8 +707,8 @@ const removeMatchedAds = task => {
           matched = false;
           break;
         }
-        const fp = localSegmentPath(task, seg.index);
-        if (!fs.existsSync(fp) || fs.statSync(fp).size !== sample.size || segmentHash(seg) !== sample.hash) {
+        const info = segmentInfo(seg);
+        if (!info || info.size !== sample.size || segmentHash(seg) !== sample.hash) {
           matched = false;
           break;
         }
@@ -685,6 +734,7 @@ const removeMatchedAds = task => {
   task.adScan = {
     enabled: task.removeAds === true,
     scannedAt: Date.now(),
+    scannedDoneSegments: doneAtScan,
     patterns: patterns.length,
     matches: result.matches,
     removedSegments: task.adRemovedSegments,
@@ -696,10 +746,20 @@ const removeMatchedAds = task => {
   return result;
 };
 
+// 是否需要重新扫描广告：从未扫描过，或扫描后又下载了新的切片
+const needsAdScan = task => {
+  if (task.removeAds !== true) return false;
+  hydrateSegments(task);
+  const doneCount = task.segments.filter(s => s.status === 'done').length;
+  if (!doneCount) return false;
+  return doneCount > (task.adScan?.scannedDoneSegments ?? -1);
+};
+
 const buildLocalManifest = task => {
   hydrateSegments(task);
   const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-MEDIA-SEQUENCE:0'];
-  const target = Math.max(1, Math.ceil(Math.max(...task.segments.map(s => s.duration || 1))));
+  let target = 1;
+  for (const seg of task.segments) target = Math.max(target, Math.ceil(seg.duration || 1));
   lines.push(`#EXT-X-TARGETDURATION:${target}`);
   const keys = new Map((task.keys || []).map(k => [k.id, k]));
   const writtenKeys = new Set();
@@ -772,7 +832,7 @@ const mergeTask = async task => {
   task.error = '';
   updateTask(task);
   try {
-    if (task.removeAds === true) {
+    if (needsAdScan(task)) {
       removeMatchedAds(task);
       updateTask(task);
       if (!task.segments.some(s => s.status === 'done')) throw new Error('no non-ad segments to merge');
@@ -814,6 +874,13 @@ const startMergeTask = task => {
   mergeTask(task).catch(e => log('merge failed:', task.id, e.message));
 };
 
+const abortControl = control => {
+  if (!control) return;
+  for (const ctrl of control.controllers) {
+    try { ctrl.abort(); } catch {}
+  }
+};
+
 const downloadKeys = async (task, control) => {
   const keys = task.keys || [];
   for (let i = 0; i < keys.length; i += 1) {
@@ -845,9 +912,10 @@ const runDownload = async task => {
         const seg = task.segments[cursor++];
         if (!seg || seg.status === 'done' || seg.status === 'ad_removed') continue;
         const dest = localSegmentPath(task, seg.index);
-        if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
+        const existingSize = fileSize(dest);
+        if (existingSize > 0) {
           seg.status = 'done';
-          seg.size = fs.statSync(dest).size;
+          seg.size = existingSize;
           recalcProgress(task);
           continue;
         }
@@ -904,7 +972,8 @@ const runDownload = async task => {
       updateTask(task);
       return;
     }
-    if (task.removeAds === true) {
+    // 自动合并时由 mergeTask 统一去广告，避免重复扫描
+    if (!task.autoMerge && needsAdScan(task)) {
       removeMatchedAds(task);
       updateTask(task);
     }
@@ -925,9 +994,7 @@ const runDownload = async task => {
     }
     updateTask(task);
   } finally {
-    for (const ctrl of control.controllers) {
-      try { ctrl.abort(); } catch {}
-    }
+    abortControl(control);
     controls.delete(task.id);
     active.delete(task.id);
     if (task.batchId) scheduleBatch(task.batchId);
@@ -1009,8 +1076,9 @@ const createTask = async body => {
   if (!isCmsType(resourceType)) return { task: await createM3u8Task(body) };
 
   const videoAddress = String(body.videoAddress || body.m3u8Url || '').trim();
-  const mode = body.ruyiMode === 'all' ? 'all' : 'single';
-  const resolved = await resolveCmsEpisodes(videoAddress, body.sourcePage, mode, resourceType);
+  const mode = body.ruyiMode === 'all' ? 'all' : (body.ruyiMode === 'partial' ? 'partial' : 'single');
+  // 部分模式同样需要完整剧集列表，再按用户填写的集号取子集
+  const resolved = await resolveCmsEpisodes(videoAddress, body.sourcePage, mode === 'single' ? 'single' : 'all', resourceType);
   if (!resolved.episodes.length) throw new Error('no ruyi episodes found');
 
   if (mode === 'single') {
@@ -1030,11 +1098,15 @@ const createTask = async body => {
 
   const batchId = `batch_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
   const batchConcurrency = Math.max(1, Math.min(parseInt(body.taskConcurrency || 1, 10) || 1, 20));
+  const selectedIndexes = mode === 'partial'
+    ? parseEpisodeSelection(body.episodeSelect, resolved.episodes.length).map(number => number - 1)
+    : resolved.episodes.map((_, index) => index);
   const tasksCreated = [];
-  for (let i = 0; i < resolved.episodes.length; i += 1) {
-    const episode = resolved.episodes[i];
+  for (let position = 0; position < selectedIndexes.length; position += 1) {
+    const index = selectedIndexes[position];
+    const episode = resolved.episodes[index];
     const prefix = sanitizeName(resolved.title || 'ruyi');
-    const episodeName = episode.name || `第${String(i + 1).padStart(2, '0')}集`;
+    const episodeName = episode.name || `第${String(index + 1).padStart(2, '0')}集`;
     const outputName = `${prefix}_${sanitizeName(episodeName)}.mp4`;
     const task = await createM3u8Task(body, {
       m3u8Url: episode.url,
@@ -1044,9 +1116,9 @@ const createTask = async body => {
       batchTitle: resolved.title || '',
       batchConcurrency,
       episodeName,
-      episodeIndex: i,
-      initialStatus: i < batchConcurrency ? 'pending' : 'waiting',
-      autoStart: i < batchConcurrency,
+      episodeIndex: index,
+      initialStatus: position < batchConcurrency ? 'pending' : 'waiting',
+      autoStart: position < batchConcurrency,
       deferParse: true,
       continueOnError: true,
     });
@@ -1086,9 +1158,7 @@ const pauseTask = task => {
   const control = controls.get(task.id);
   if (control) {
     control.paused = true;
-    for (const ctrl of control.controllers) {
-      try { ctrl.abort(); } catch {}
-    }
+    abortControl(control);
     task.status = 'paused';
     task.error = '';
     updateTask(task);
@@ -1108,9 +1178,7 @@ const stopTask = task => {
   const control = controls.get(task.id);
   if (control) {
     control.stopped = true;
-    for (const ctrl of control.controllers) {
-      try { ctrl.abort(); } catch {}
-    }
+    abortControl(control);
   }
   task.status = 'stopped';
   task.error = '';
@@ -1151,18 +1219,9 @@ const removeAdsFromTask = task => {
   return result;
 };
 
-const moveTaskAsync = async (task, destDir, previousStatus = task.status) => {
-  const src = task.movedPath || task.outputPath || outputPath(task);
-  if (!src || !fs.existsSync(src)) throw new Error('output video does not exist');
-  const targetDir = path.resolve(String(destDir || '').trim());
-  if (!targetDir || targetDir === path.parse(targetDir).root) throw new Error('invalid target directory');
+const moveTaskAsync = async (task, src, targetDir, previousStatus) => {
   await fs.promises.mkdir(targetDir, { recursive: true });
   const target = path.join(targetDir, path.basename(src));
-  if (path.resolve(src) === path.resolve(target)) return target;
-
-  task.status = 'moving';
-  task.error = '';
-  updateTask(task);
   try {
     try {
       await fs.promises.rename(src, target);
@@ -1193,27 +1252,24 @@ const moveTaskAsync = async (task, destDir, previousStatus = task.status) => {
 };
 
 const startMoveTask = (task, destDir) => {
-  const src = task.movedPath || task.outputPath || outputPath(task);
-  if (!src || !fs.existsSync(src)) throw new Error('output video does not exist');
+  const src = existingVideoPath(task);
+  if (!src) throw new Error('output video does not exist');
   if (task.status === 'moving') throw new Error('task is already moving');
   const targetDir = path.resolve(String(destDir || '').trim());
   if (!targetDir || targetDir === path.parse(targetDir).root) throw new Error('invalid target directory');
-  task.moveTargetDir = targetDir;
+  if (path.dirname(path.resolve(src)) === targetDir) return; // 已在目标目录，无需搬运
   const previousStatus = task.status;
   task.status = 'moving';
   task.error = '';
   updateTask(task);
-  moveTaskAsync(task, targetDir, previousStatus).catch(e => log('move failed:', task.id, e.message));
+  moveTaskAsync(task, src, targetDir, previousStatus).catch(e => log('move failed:', task.id, e.message));
 };
 
 const stopTaskForDelete = task => {
   const control = controls.get(task.id);
-  if (control) {
-    control.stopped = true;
-    for (const ctrl of control.controllers) {
-      try { ctrl.abort(); } catch {}
-    }
-  }
+  if (!control) return;
+  control.stopped = true;
+  abortControl(control);
 };
 
 const deleteTask = task => {
@@ -1305,6 +1361,80 @@ const browse = dir => {
     .map(d => ({ name: d.name, path: path.join(current, d.name) }))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh'));
   return { currentPath: current, parentPath: path.dirname(current), directories, isRoot: current === path.parse(current).root };
+};
+
+const VIDEO_TYPES = {
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska',
+  '.webm': 'video/webm',
+  '.ts': 'video/mp2t',
+  '.avi': 'video/x-msvideo',
+  '.flv': 'video/x-flv',
+};
+
+// 播放用的成品文件：优先已移动的成品，其次合并输出
+const videoFileOf = task => {
+  const file = existingVideoPath(task);
+  return file ? { file, size: fileSize(file) } : null;
+};
+
+const parseRange = (header, size) => {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim());
+  if (!match) return null;
+  const [, startText, endText] = match;
+  if (!startText && !endText) return null;
+  let start;
+  let end;
+  if (!startText) {
+    const suffix = Number(endText);
+    if (!Number.isFinite(suffix) || suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(startText);
+    end = endText ? Number(endText) : size - 1;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
+};
+
+// 带 Range 支持的视频流，便于浏览器播放与拖动进度
+const streamVideo = (req, res, task) => {
+  const found = videoFileOf(task);
+  if (!found) return sendJSON(res, 404, { error: 'video file not found' });
+  const { file, size } = found;
+  const headers = {
+    'Content-Type': VIDEO_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+    'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(path.basename(file))}`,
+  };
+  if (!size) {
+    res.writeHead(200, { ...headers, 'Content-Length': 0 });
+    return res.end();
+  }
+  const range = req.headers.range ? parseRange(req.headers.range, size) : null;
+  if (req.headers.range && !range) {
+    res.writeHead(416, { ...headers, 'Content-Range': `bytes */${size}` });
+    return res.end();
+  }
+  const start = range ? range.start : 0;
+  const end = range ? range.end : size - 1;
+  res.writeHead(range ? 206 : 200, {
+    ...headers,
+    'Content-Length': end - start + 1,
+    ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+  });
+  if (req.method === 'HEAD') return res.end();
+  const stream = fs.createReadStream(file, { start, end });
+  stream.on('error', err => {
+    log('video stream failed:', task.id, err.message);
+    res.destroy();
+  });
+  req.on('close', () => stream.destroy());
+  return stream.pipe(res);
 };
 
 const handleSse = (req, res) => {
@@ -1414,6 +1544,9 @@ const handle = async (req, res) => {
         startMoveTask(task, body.destDir);
         return sendJSON(res, 202, { ok: true, task: publicTask(task) });
       }
+      if ((req.method === 'GET' || req.method === 'HEAD') && action === 'video') {
+        return streamVideo(req, res, task);
+      }
       if (req.method === 'DELETE' && !action) {
         deleteTask(task);
         return sendJSON(res, 200, { ok: true });
@@ -1474,6 +1607,7 @@ export {
   isCmsType,
   parseM3u8,
   parseEpisodeList,
+  parseEpisodeSelection,
   resolveCmsEpisodes,
   createTask,
 };
