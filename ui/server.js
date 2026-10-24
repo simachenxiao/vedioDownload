@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.2.5';
+const VERSION = '0.2.6';
 const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

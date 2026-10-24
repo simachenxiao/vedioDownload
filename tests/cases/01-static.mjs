@@ -18,6 +18,7 @@ export default {
     'node --check 两个前端/后端 JS',
     'manifest / package.json / VERSION 三处版本同步',
     '首页与静态资源 Content-Type',
+    '控件静止状态可见（描边/底色/焦点环）',
     '路径穿越拦截',
     '未知 API 404',
     '/app/vdl 前缀与 308 重定向',
@@ -60,6 +61,15 @@ export default {
     await ctx.check('页面含队列视图与已下载统计', html.includes('data-filter="toMerge"') && html.includes('id="statVolume"'));
     await ctx.check('前端渲染切片状态条', mainSrc.includes('segmentStrip') && html.includes('id="taskList"'));
     await ctx.check('自托管 Geist 字体存在', fs.existsSync(path.join(ROOT, 'ui', 'fonts', 'geist-latin.woff2')));
+
+    const cssSrc = fs.readFileSync(path.join(ROOT, 'ui', 'styles.css'), 'utf8');
+    await ctx.check(
+      '行内操作、更多菜单与次级按钮都有可见控件外观',
+      /\.row-action\s*\{[^}]*border:\s*1px solid var\(--control-border\)/.test(cssSrc)
+        && /\.kebab\s*\{[^}]*border:\s*1px solid var\(--control-border\)/.test(cssSrc)
+        && /\.btn\.ghost\s*\{[^}]*border-color:\s*var\(--control-border\)/.test(cssSrc),
+    );
+    await ctx.check('控件有键盘可见的焦点环', cssSrc.includes('button:focus-visible'));
 
     const icon = await fetch(`${server.base}/images/icon_64.png`);
     await ctx.check('图片静态资源', icon.status === 200 && (icon.headers.get('content-type') || '').includes('image/png'));

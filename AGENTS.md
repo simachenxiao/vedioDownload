@@ -148,6 +148,7 @@ fnpack build -d .                              # 其他平台
 - 用户可见文案用中文；标识符、注释可用英文，但本仓库注释以中文为主。
 - 前端 `API_BASE` 需兼容 `/app/vdl` 前缀；新增接口记得同步 `ui/main.js` 与 SSE 刷新。
 - 提交信息用英文、祈使句（如 `Add ...` / `Fix ...`）。
+- **可点元素必须可辨识**：静止状态就要有底色或描边（`.btn` / `.row-action` / `.kebab` / `.icon-btn` 用 `--control-bg` + `--control-border`），不能只靠文字；`button:focus-visible` 提供焦点环，悬停/按下有底色变化。新增按钮时复用这些类，不要写裸文字按钮。
 
 ## 验证清单（改动后必做）
 
