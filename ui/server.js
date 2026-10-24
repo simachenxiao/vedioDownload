@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.2.4';
+const VERSION = '0.2.5';
 const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -147,6 +147,30 @@ const publicTask = task => {
   const { segments, keys, ...rest } = task;
   return rest;
 };
+
+// 把切片状态压缩成 40 格的状态条（d=完成 a=去广告 p=未完成 f=失败），供列表展示
+const STRIP_CELLS = 40;
+const stripOf = task => {
+  const total = task.segments?.length || 0;
+  if (!total) return '';
+  let out = '';
+  for (let cell = 0; cell < STRIP_CELLS; cell += 1) {
+    const from = Math.floor((cell * total) / STRIP_CELLS);
+    const to = Math.max(from + 1, Math.floor(((cell + 1) * total) / STRIP_CELLS));
+    let state = 'p';
+    for (let i = from; i < to && i < total; i += 1) {
+      const status = task.segments[i].status;
+      if (status === 'failed') { state = 'f'; break; }
+      if (status === 'ad_removed') state = 'a';
+      else if (status === 'done' && state !== 'a') state = 'd';
+    }
+    out += state;
+  }
+  return out;
+};
+
+// 接口/SSE 用：附带状态条，但不写进 tasks.json
+const apiTask = task => ({ ...publicTask(task), segmentStrip: stripOf(task) });
 const saveTasks = () => atomicWrite(TASKS_FILE, JSON.stringify([...tasks.values()].map(publicTask), null, 2));
 const broadcast = (event, data) => {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -158,7 +182,7 @@ const updateTask = task => {
   if (!tasks.has(task.id)) return;
   task.updatedAt = Date.now();
   saveTasks();
-  broadcast('task', publicTask(task));
+  broadcast('task', apiTask(task));
   broadcast('stats', buildStats());
 };
 
@@ -1484,14 +1508,14 @@ const handle = async (req, res) => {
     if (pathname === '/api/tasks' && req.method === 'GET') {
       return sendJSON(res, 200, { tasks: [...tasks.values()].map(t => {
         recalcProgress(t);
-        return publicTask(t);
+        return apiTask(t);
       }) });
     }
     if (pathname === '/api/tasks' && req.method === 'POST') {
       const body = await readBody(req);
       const result = await createTask(body);
-      if (result.tasks) return sendJSON(res, 200, { tasks: result.tasks.map(publicTask) });
-      return sendJSON(res, 200, { task: publicTask(result.task) });
+      if (result.tasks) return sendJSON(res, 200, { tasks: result.tasks.map(apiTask) });
+      return sendJSON(res, 200, { task: apiTask(result.task) });
     }
     if (pathname === '/api/tasks/bulk/delete' && req.method === 'POST') {
       return sendJSON(res, 200, { ok: true, ...deleteAllTasks() });
@@ -1511,38 +1535,38 @@ const handle = async (req, res) => {
       if (req.method === 'GET' && !action) {
         hydrateSegments(task);
         recalcProgress(task);
-        return sendJSON(res, 200, { task: publicTask(task) });
+        return sendJSON(res, 200, { task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'retry') {
         await retryTask(task);
-        return sendJSON(res, 200, { ok: true, task: publicTask(task) });
+        return sendJSON(res, 200, { ok: true, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'pause') {
         const ok = pauseTask(task);
-        return sendJSON(res, 200, { ok, task: publicTask(task) });
+        return sendJSON(res, 200, { ok, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'resume') {
         const ok = resumeTask(task);
-        return sendJSON(res, 200, { ok, task: publicTask(task) });
+        return sendJSON(res, 200, { ok, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'stop') {
         const ok = stopTask(task);
-        return sendJSON(res, 200, { ok, task: publicTask(task) });
+        return sendJSON(res, 200, { ok, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'merge') {
         hydrateSegments(task);
         recalcProgress(task);
         startMergeTask(task);
-        return sendJSON(res, 202, { ok: true, task: publicTask(task) });
+        return sendJSON(res, 202, { ok: true, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'remove-ads') {
         const result = removeAdsFromTask(task);
-        return sendJSON(res, 200, { ok: true, result, task: publicTask(task) });
+        return sendJSON(res, 200, { ok: true, result, task: apiTask(task) });
       }
       if (req.method === 'POST' && action === 'move') {
         const body = await readBody(req);
         startMoveTask(task, body.destDir);
-        return sendJSON(res, 202, { ok: true, task: publicTask(task) });
+        return sendJSON(res, 202, { ok: true, task: apiTask(task) });
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && action === 'video') {
         return streamVideo(req, res, task);

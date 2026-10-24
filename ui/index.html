@@ -3,76 +3,121 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VDL</title>
+  <title>VDL · 下载队列</title>
   <base href="/app/vdl/">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand">
-      <img src="images/icon_64.png" alt="" width="36" height="36">
-      <div>
-        <h1>VDL</h1>
-        <p>m3u8 视频下载任务</p>
+  <aside class="rail">
+    <div class="rail-brand">
+      <svg class="mark" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2.5" y="1" width="4.5" height="20" rx="1"/>
+        <rect x="9.5" y="8" width="4.5" height="13" rx="1"/>
+        <rect x="16.5" y="14" width="5" height="7" rx="1"/>
+      </svg>
+      <div class="brand-text">
+        <strong>VDL</strong>
+        <span>飞牛 NAS · 下载队列</span>
       </div>
     </div>
-    <div class="header-actions">
-      <button id="refreshBtn" type="button" title="刷新">刷新</button>
-      <button class="primary" id="openAddTask" type="button">新增任务</button>
-    </div>
-  </header>
 
-  <main class="shell">
-    <section class="stats" aria-label="统计">
-      <div class="metric"><label>总数</label><span id="statTotal">0</span></div>
-      <div class="metric"><label>进行中</label><span id="statRunning">0</span></div>
-      <div class="metric"><label>完成</label><span id="statCompleted">0</span></div>
-      <div class="metric"><label>成功</label><span id="statSuccess">0</span></div>
-      <div class="metric danger"><label>失败</label><span id="statFailed">0</span></div>
+    <div class="rail-views">
+      <p class="rail-label">队列</p>
+      <div class="view-list" id="filter" role="group" aria-label="任务筛选">
+        <button type="button" data-filter="all" aria-pressed="true">全部<span data-count="all">0</span></button>
+        <button type="button" data-filter="running" aria-pressed="false">进行中<span data-count="running">0</span></button>
+        <button type="button" data-filter="toMerge" aria-pressed="false">待合并<span data-count="toMerge">0</span></button>
+        <button type="button" data-filter="failed" aria-pressed="false">失败<span data-count="failed">0</span></button>
+        <button type="button" data-filter="finished" aria-pressed="false">已完成<span data-count="finished">0</span></button>
+      </div>
+    </div>
+
+    <div class="rail-foot">
+      <p class="rail-label">数据目录</p>
+      <p class="rail-path" id="dataDir" title="">—</p>
+      <p class="rail-version">VDL <span id="appVersion">—</span></p>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="page-head">
+      <div class="page-title">
+        <h1>下载队列</h1>
+        <p class="finding" id="pageFinding">正在读取任务…</p>
+      </div>
+      <div class="page-actions">
+        <span class="stamp" id="freshness"></span>
+        <button type="button" class="btn ghost" id="refreshBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.6 6"/><path d="M20 4v7h-7"/>
+          </svg>
+          刷新
+        </button>
+        <button type="button" class="btn primary" id="openAddTask">新增任务</button>
+      </div>
+    </header>
+
+    <section class="kpis" aria-label="队列统计">
+      <div class="kpi">
+        <span class="kpi-label">进行中</span>
+        <strong class="kpi-value num" id="statRunning">0</strong>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">待合并</span>
+        <strong class="kpi-value num" id="statToMerge">0</strong>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">失败</span>
+        <strong class="kpi-value num" id="statFailed">0</strong>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">已完成</span>
+        <strong class="kpi-value num" id="statDone">0</strong>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">已下载</span>
+        <strong class="kpi-value num" id="statVolume">0 B</strong>
+      </div>
     </section>
 
-    <section class="tasks-panel">
-      <div class="panel-head">
-        <div>
-          <h2>下载列表</h2>
-          <p>按任务查看切片进度、状态和输出位置</p>
-        </div>
-        <div class="panel-tools">
-          <button type="button" class="danger-button" id="deleteAllBtn">全部删除</button>
-          <button type="button" id="moveAllBtn">一键移动</button>
-          <button type="button" id="mergeAllBtn">一键合并</button>
-          <select id="filter">
-            <option value="all">全部任务</option>
-            <option value="running">进行中</option>
-            <option value="failed">失败</option>
-            <option value="finished">已完成</option>
-          </select>
+    <div class="notice" id="pageNotice" role="status" hidden>
+      <span id="noticeText"></span>
+      <button type="button" class="btn ghost small" id="noticeRetry">重试</button>
+    </div>
+
+    <section class="queue" aria-labelledby="queueTitle">
+      <div class="queue-head">
+        <h2 id="queueTitle"><span id="queueTitleText">全部任务</span><span class="queue-count num" id="queueCount">0</span></h2>
+        <div class="queue-tools">
+          <button type="button" class="btn ghost small" id="mergeAllBtn">一键合并</button>
+          <button type="button" class="btn ghost small" id="moveAllBtn">一键移动</button>
+          <button type="button" class="btn ghost small danger" id="deleteAllBtn">全部删除</button>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="task-table">
-          <thead>
-            <tr>
-              <th>任务</th>
-              <th>状态</th>
-              <th>切片进度</th>
-              <th>大小</th>
-              <th>创建时间</th>
-              <th>位置</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="taskList"></tbody>
-        </table>
+
+      <div class="list-head" aria-hidden="true">
+        <span>任务</span>
+        <span>状态</span>
+        <span>切片进度</span>
+        <span class="num">大小</span>
+        <span class="num">创建</span>
+        <span>位置</span>
+        <span></span>
+      </div>
+
+      <div class="task-list" id="taskList">
+        <div class="loading">正在读取任务…</div>
       </div>
     </section>
   </main>
 
-  <dialog id="taskDialog">
+  <dialog id="taskDialog" class="dialog">
     <form class="dialog-body" id="taskForm">
       <div class="dialog-head">
-        <h2>新增下载任务</h2>
-        <button type="button" class="plain" id="closeTaskDialog">关闭</button>
+        <h2>新增任务</h2>
+        <button type="button" class="icon-btn" id="closeTaskDialog" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
       </div>
 
       <label>
@@ -87,7 +132,7 @@
       <div class="source-panel" id="otherFields">
         <label>
           <span>m3u8 地址</span>
-          <input id="m3u8Url" name="m3u8Url" type="url" autocomplete="off">
+          <input id="m3u8Url" name="m3u8Url" type="url" autocomplete="off" placeholder="https://…/index.m3u8">
         </label>
         <label>
           <span>切片 Base 地址</span>
@@ -104,22 +149,24 @@
           <span>视频地址</span>
           <input id="videoAddress" name="videoAddress" type="url" autocomplete="off" placeholder="播放器地址或采集站 index.m3u8 地址">
         </label>
-        <label>
-          <span>来源页</span>
-          <select id="sourcePage" name="sourcePage">
-            <option value="auto">自动识别</option>
-            <option value="libretv">LibreTV</option>
-            <option value="kvedio">KVideo</option>
-          </select>
-        </label>
-        <label>
-          <span>下载范围</span>
-          <select id="ruyiMode" name="ruyiMode">
-            <option value="single">单集</option>
-            <option value="all">全集</option>
-            <option value="partial">部分</option>
-          </select>
-        </label>
+        <div class="form-grid">
+          <label>
+            <span>来源页</span>
+            <select id="sourcePage" name="sourcePage">
+              <option value="auto">自动识别</option>
+              <option value="libretv">LibreTV</option>
+              <option value="kvedio">KVideo</option>
+            </select>
+          </label>
+          <label>
+            <span>下载范围</span>
+            <select id="ruyiMode" name="ruyiMode">
+              <option value="single">单集</option>
+              <option value="all">全集</option>
+              <option value="partial">部分</option>
+            </select>
+          </label>
+        </div>
         <label id="episodeNameRow">
           <span>单集名称</span>
           <input id="episodeName" name="episodeName" type="text" autocomplete="off" placeholder="例如：第01集">
@@ -127,7 +174,7 @@
         <label id="episodeSelectRow" hidden>
           <span>选择集数</span>
           <input id="episodeSelect" name="episodeSelect" type="text" autocomplete="off" placeholder="例如：1;2;4 或 2-6，可混用 1;3-5">
-          <small class="subtle">用 ; , ， ； 或空格分隔集号，支持 2-6 / 2~6 范围，最多到该剧总集数</small>
+          <small>用 ; , ， ； 或空格分隔集号，支持 2-6 / 2~6 范围，最多到该剧总集数</small>
         </label>
         <label id="taskConcurrencyRow">
           <span>任务并发数</span>
@@ -163,56 +210,62 @@
 
       <p class="message" id="formMessage"></p>
       <div class="dialog-actions">
-        <button type="button" id="cancelTask">取消</button>
-        <button class="primary" type="submit">开始下载</button>
+        <button type="button" class="btn" id="cancelTask">取消</button>
+        <button class="btn primary" type="submit">开始下载</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="moveDialog">
+  <dialog id="moveDialog" class="dialog">
     <form method="dialog" class="dialog-body" id="moveForm">
       <div class="dialog-head">
         <h2>移动视频</h2>
-        <button type="button" class="plain" id="cancelMove">关闭</button>
+        <button type="button" class="icon-btn" id="cancelMove" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
       </div>
       <label>
         <span>目标目录</span>
         <div class="input-row">
-          <input id="moveDest" type="text" required>
-          <button type="button" id="openMoveBrowse">选择目录</button>
+          <input id="moveDest" type="text" required placeholder="/vol1/1000/videos">
+          <button type="button" class="btn" id="openMoveBrowse">选择目录</button>
         </div>
       </label>
       <div class="dialog-actions">
-        <button class="primary" value="confirm" type="submit">移动</button>
+        <button class="btn primary" value="confirm" type="submit">移动</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="playerDialog" class="player-dialog">
+  <dialog id="browseDialog" class="dialog">
     <div class="dialog-body">
       <div class="dialog-head">
-        <h2 id="playerTitle">播放视频</h2>
-        <button type="button" class="plain" id="closePlayer">关闭</button>
+        <h2>选择目录</h2>
+        <button type="button" class="icon-btn" id="closeBrowse" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
       </div>
-      <video id="playerVideo" controls playsinline preload="metadata"></video>
-      <p class="message" id="playerMessage"></p>
+      <div class="browse-path num" id="browsePath">—</div>
+      <div class="browse-list" id="browseList"></div>
       <div class="dialog-actions">
-        <button class="primary" type="button" id="closePlayerBtn">关闭</button>
+        <button type="button" class="btn" id="browseParent">上一级</button>
+        <button class="btn primary" type="button" id="selectBrowsePath">选择当前目录</button>
       </div>
     </div>
   </dialog>
 
-  <dialog id="browseDialog">
+  <dialog id="playerDialog" class="dialog player-dialog">
     <div class="dialog-body">
       <div class="dialog-head">
-        <h2>选择目录</h2>
-        <button type="button" class="plain" id="closeBrowse">关闭</button>
+        <h2 id="playerTitle">播放视频</h2>
+        <button type="button" class="icon-btn" id="closePlayer" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
       </div>
-      <div class="browse-path" id="browsePath">-</div>
-      <div class="browse-list" id="browseList"></div>
+      <video id="playerVideo" controls playsinline preload="metadata"></video>
+      <p class="message" id="playerMessage"></p>
       <div class="dialog-actions">
-        <button type="button" id="browseParent">上一级</button>
-        <button class="primary" type="button" id="selectBrowsePath">选择当前目录</button>
+        <button class="btn" type="button" id="closePlayerBtn">关闭</button>
       </div>
     </div>
   </dialog>

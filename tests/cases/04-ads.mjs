@@ -49,6 +49,7 @@ export default {
     await ctx.check('命中并移除 2 个广告切片', scanned.adRemovedSegments === 2, String(scanned.adRemovedSegments));
     await ctx.check('adScan 记录样本数与命中段数', (scanned.adScan?.patterns || 0) >= 1 && scanned.adScan?.matches === 1 && scanned.adScan?.removedSegments === 2, JSON.stringify({ patterns: scanned.adScan?.patterns, matches: scanned.adScan?.matches, removed: scanned.adScan?.removedSegments }));
     await ctx.check('切片统计包含 ad_removed（4 片）', scanned.doneSegments === 4, String(scanned.doneSegments));
+    await ctx.check('segmentStrip 标出去广告切片', (scanned.segmentStrip || '').includes('a'), scanned.segmentStrip);
     const removedDir = path.join(scanned.tempDir, 'removed_ads', 'testad');
     await ctx.check('广告切片被移动到 removed_ads/', fs.existsSync(removedDir) && fs.readdirSync(removedDir).length === 2, fs.existsSync(removedDir) ? fs.readdirSync(removedDir).join(',') : '目录不存在');
 

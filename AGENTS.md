@@ -25,7 +25,8 @@ ad/NN/*.ts            去广告样本（git 忽略，且默认不打进 fpk）
 ui/server.js          后端全部逻辑（HTTP + Unix socket、REST、SSE、下载/合并/去广告/移动/播放）
 ui/index.html         单页界面
 ui/main.js            前端逻辑（fetch + SSE + 渲染）
-ui/styles.css         样式
+ui/styles.css         样式（tasteskill achromatic-ledger：蓝灰地面 + 唯一色相 #1d5fbf）
+ui/fonts/             自托管 Geist（woff2，离线可用，勿依赖 Google Fonts）
 tests/                回归测试：run.mjs 执行器 + harness.mjs 工具 + cases/ 用例 + README.md 用例清单
 tests/tools/          辅助脚本（如未引用声明扫描 dead-code.mjs）
 vdl.fpk               构建产物（git 忽略）
@@ -134,6 +135,7 @@ fnpack build -d .                              # 其他平台
 
 ### 下载与合并
 
+- 列表接口与 SSE 的任务对象带 `segmentStrip`（40 格：`d` 完成、`a` 去广告、`f` 失败、`p` 未完成），由 `apiTask()` 生成，**不写入 tasks.json**。
 - 解析 master playlist 自动选最高码率，支持 `EXT-X-KEY`（下载密钥）与 `EXT-X-MAP`。
 - 并发 worker 池（`concurrency`），失败重试 `retries`，写 `.part` 后 rename；已存在的非空切片直接标记 `done`（断点续传）。
 - 合并：先生成 `local.m3u8`，优先 `ffmpeg -c copy -bsf:a aac_adtstoasc`，失败回退为裸 `concat`（`mergeEngine` 记录 `ffmpeg`/`concat`）。

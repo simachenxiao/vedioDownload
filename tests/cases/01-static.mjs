@@ -57,6 +57,9 @@ export default {
       '前端按下载范围切换集数输入框',
       mainSrc.includes("$('#episodeSelectRow').hidden = mode !== 'partial'") && mainSrc.includes('body.episodeSelect ='),
     );
+    await ctx.check('页面含队列视图与已下载统计', html.includes('data-filter="toMerge"') && html.includes('id="statVolume"'));
+    await ctx.check('前端渲染切片状态条', mainSrc.includes('segmentStrip') && html.includes('id="taskList"'));
+    await ctx.check('自托管 Geist 字体存在', fs.existsSync(path.join(ROOT, 'ui', 'fonts', 'geist-latin.woff2')));
 
     const icon = await fetch(`${server.base}/images/icon_64.png`);
     await ctx.check('图片静态资源', icon.status === 200 && (icon.headers.get('content-type') || '').includes('image/png'));

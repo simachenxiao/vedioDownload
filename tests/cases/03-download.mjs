@@ -31,6 +31,7 @@ export default {
     const expectedBytes = buffers.reduce((sum, buffer) => sum + buffer.length, 0);
     await ctx.check('全部切片下载完成', done.status === 'downloaded' && done.doneSegments === 8 && done.failedSegments === 0, `${done.status} ${done.doneSegments}/${done.totalSegments}`);
     await ctx.check('progress 为 100', done.progress === 100, String(done.progress));
+    await ctx.check('segmentStrip 为 40 格且全部完成', done.segmentStrip?.length === 40 && /^d{40}$/.test(done.segmentStrip), done.segmentStrip);
     await ctx.check('downloadedBytes 等于切片总大小', done.downloadedBytes === expectedBytes, `${done.downloadedBytes}/${expectedBytes}`);
     const segmentFiles = fs.readdirSync(path.join(done.tempDir, 'segments')).filter(f => f.endsWith('.ts'));
     await ctx.check('切片全部落盘且无 .part 残留', segmentFiles.length === 8 && !fs.readdirSync(path.join(done.tempDir, 'segments')).some(f => f.endsWith('.part')), segmentFiles.join(','));
@@ -66,6 +67,7 @@ export default {
     const failTask = await api.create({ ...base, m3u8Url: failCdn.url('media.m3u8'), outputName: 'fail.mp4', concurrency: 2, retries: 1 });
     const failed = await api.waitFor(failTask.id, ['failed', 'downloaded']);
     await ctx.check('重试耗尽后任务 failed', failed.status === 'failed' && failed.failedSegments === 1, `${failed.status} failedSegments=${failed.failedSegments}`);
+    await ctx.check('失败切片在 segmentStrip 中标为 f', (failed.segmentStrip || '').includes('f'), failed.segmentStrip);
     await ctx.check('失败任务记录错误信息', /failed|segment/i.test(String(failed.error)), failed.error);
     await ctx.check('其余切片仍完成', failed.doneSegments === 2, String(failed.doneSegments));
   },

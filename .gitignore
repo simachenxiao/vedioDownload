@@ -1,4 +1,4 @@
-vdl.fpk
+*.fpk
 .runtime/
 .runtime-*/
 .runtime-test/
@@ -11,3 +11,7 @@ ad/
 *.part
 node_modules/
 .DS_Store
+
+# 本地 AI 代理资源（design-taste-frontend 技能约 2.4MB，不进 fpk）
+.pi/skills/
+.taste-skill/
