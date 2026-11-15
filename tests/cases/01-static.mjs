@@ -18,6 +18,7 @@ export default {
     'node --check 两个前端/后端 JS',
     'manifest / package.json / VERSION 三处版本同步',
     '首页与静态资源 Content-Type',
+    '静态资源 no-cache + ETag，回归 304',
     '控件静止状态可见（描边/底色/焦点环）',
     '路径穿越拦截',
     '未知 API 404',
@@ -48,6 +49,15 @@ export default {
 
     const css = await fetch(`${server.base}/styles.css`);
     await ctx.check('CSS 静态资源', css.status === 200 && (css.headers.get('content-type') || '').includes('text/css'));
+
+    const cssEtag = css.headers.get('etag') || '';
+    await ctx.check(
+      '静态资源要求回源校验（no-cache + ETag）',
+      Boolean(cssEtag) && (css.headers.get('cache-control') || '').includes('no-cache'),
+      `etag=${cssEtag.slice(0, 24)} cache=${css.headers.get('cache-control')}`,
+    );
+    const revalidated = await fetch(`${server.base}/styles.css`, { headers: { 'If-None-Match': cssEtag } });
+    await ctx.check('ETag 命中返回 304 且无正文', revalidated.status === 304 && (await revalidated.text()) === '', `status=${revalidated.status}`);
 
     const mainSrc = fs.readFileSync(path.join(ROOT, 'ui', 'main.js'), 'utf8');
     await ctx.check(

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.2.6';
+const VERSION = '0.2.7';
 const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1473,12 +1473,17 @@ const handleSse = (req, res) => {
   req.on('close', () => sseClients.delete(res));
 };
 
-const serveStatic = (pathname, res) => {
+const serveStatic = (pathname, req, res) => {
   let rel = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '');
   if (rel.includes('..')) { res.writeHead(403); res.end('Forbidden'); return; }
   let fp = path.join(UI_DIR, rel);
   if (!fp.startsWith(UI_DIR)) { res.writeHead(403); res.end('Forbidden'); return; }
-  if (!fs.existsSync(fp) || !fs.statSync(fp).isFile()) fp = path.join(UI_DIR, 'index.html');
+  let stat = null;
+  try { stat = fs.statSync(fp); } catch { stat = null; }
+  if (!stat || !stat.isFile()) {
+    fp = path.join(UI_DIR, 'index.html');
+    stat = fs.statSync(fp);
+  }
   const ext = path.extname(fp).toLowerCase();
   const contentType = {
     '.html': 'text/html; charset=utf-8',
@@ -1487,7 +1492,15 @@ const serveStatic = (pathname, res) => {
     '.png': 'image/png',
     '.svg': 'image/svg+xml',
   }[ext] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': contentType });
+  // 回源校验 + ETag：升级后浏览器不会继续跑旧的 css/js，未改动时仍走 304 省流量
+  const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const headers = { 'Content-Type': contentType, 'Cache-Control': 'no-cache', ETag: etag };
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+  res.writeHead(200, headers);
   fs.createReadStream(fp).pipe(res);
 };
 
@@ -1579,7 +1592,7 @@ const handle = async (req, res) => {
     if (pathname === '/api/browse' && req.method === 'GET') {
       return sendJSON(res, 200, browse(url.searchParams.get('path')));
     }
-    if (!pathname.startsWith('/api')) return serveStatic(pathname, res);
+    if (!pathname.startsWith('/api')) return serveStatic(pathname, req, res);
     sendJSON(res, 404, { error: 'not found' });
   } catch (e) {
     log('request failed:', pathname, e.message);
