@@ -1,7 +1,7 @@
 // 用例 09：采集站地址解析与 m3u8 解析（离线，不依赖外网）
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL, ROOT, startCdn, startCms, startServer, writeFakePlaylist } from '../harness.mjs';
+import { pathToFileURL, ROOT, segmentBuffer, startCdn, startCms, startServer, writeFakePlaylist } from '../harness.mjs';
 
 /** 以 VDL_NO_START=1 导入 server.js，仅使用其导出的解析函数 */
 const importServer = async dataDir => {
@@ -30,10 +30,12 @@ export default {
     '加密流下载密钥 + 本地清单写入 KEY',
     '全集/部分模式批量建任务、集号保留与批次排队',
     '新版 LibreTV /watch 链接（sourceUrl + id + index）解析与自动识别',
+    '非凡资源注册、ffm3u8 直链流选择、分享页解析',
+    '子目录变体按子清单解析切片',
   ],
   async run(ctx) {
     const mod = await importServer(ctx.temp('cms-import'));
-    const { parseEpisodeList, parseEpisodeSelection, resolveCmsEpisodes, parseM3u8 } = mod;
+    const { parseEpisodeList, parseEpisodeSelection, resolveCmsEpisodes, resolveMediaUrl, parseM3u8 } = mod;
 
     const episodeList = parseEpisodeList('第01集$http://cdn.test/1.m3u8#第02集$http://cdn.test/2.m3u8', 'kuaikan');
     await ctx.check('剧集列表解析出 2 集并保留名称', episodeList.length === 2 && episodeList[0].name === '第01集' && episodeList[1].url === 'http://cdn.test/2.m3u8', JSON.stringify(episodeList));
@@ -315,5 +317,76 @@ export default {
       watchError = e.message;
     }
     await ctx.check('播放页链接缺 id 时报可读错误', /未从采集站解析到剧集|id=/.test(watchError), watchError);
+
+    // 非凡资源：采集站登记 + ffm3u8 直链流 + 分享页解析
+    await ctx.check(
+      '注册非凡资源采集站',
+      /ffzyapi\.com/.test(mod.CMS_APIS.ffzy) && mod.isCmsType('ffzy') && !mod.isCmsType('other'),
+      JSON.stringify({ ffzy: mod.CMS_APIS.ffzy, isCms: mod.isCmsType('ffzy') }),
+    );
+
+    const ffzyPlayUrl = '第01集$https://share.test/a/1#第02集$https://share.test/a/2$$$第01集$http://cdn.test/e1.m3u8#第02集$http://cdn.test/e2.m3u8';
+    const ffzyList = parseEpisodeList(ffzyPlayUrl, 'feifan$$$ffm3u8');
+    await ctx.check(
+      '非凡优先取 ffm3u8 直链流',
+      ffzyList.length === 2 && ffzyList[0].url === 'http://cdn.test/e1.m3u8' && ffzyList[1].name === '第02集',
+      JSON.stringify(ffzyList),
+    );
+
+    fs.writeFileSync(path.join(cdnDir, 'share.html'), '<html><script>const url = "low.m3u8";</script></html>');
+    const sharePage = cdn.url('share.html');
+    const resolved = await resolveMediaUrl(sharePage);
+    await ctx.check('分享页解析出相对 m3u8 地址', resolved === cdn.url('low.m3u8'), resolved);
+    await ctx.check('.m3u8 地址原样返回', (await resolveMediaUrl(cdn.url('low.m3u8'))) === cdn.url('low.m3u8'));
+
+    const shareTask = await batchServer.api.createRaw({ ...batchBase, resourceType: 'other', m3u8Url: sharePage, outputName: 'share.mp4' });
+    const shareDone = await batchServer.api.waitFor(shareTask.task.id, ['downloaded', 'failed']);
+    await ctx.check(
+      '分享页地址自动换成播放列表后下载完成',
+      shareDone.status === 'downloaded' && shareDone.m3u8Url === cdn.url('low.m3u8'),
+      `${shareDone.status} ${shareDone.m3u8Url}`,
+    );
+
+    // 子目录变体：master 指向 v/high.m3u8，切片只写相对文件名，必须按子清单位置解析
+    const nestedDir = ctx.temp('cms-nested');
+    fs.mkdirSync(path.join(nestedDir, 'v'), { recursive: true });
+    fs.writeFileSync(path.join(nestedDir, 'master.m3u8'), ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=900000', 'v/high.m3u8', ''].join('\n'));
+    fs.writeFileSync(path.join(nestedDir, 'v', 'high.m3u8'), ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:2', '#EXTINF:2.0,', 'n0.ts', '#EXTINF:2.0,', 'n1.ts', '#EXT-X-ENDLIST', ''].join('\n'));
+    fs.writeFileSync(path.join(nestedDir, 'v', 'n0.ts'), segmentBuffer('nested-0'));
+    fs.writeFileSync(path.join(nestedDir, 'v', 'n1.ts'), segmentBuffer('nested-1'));
+    const nestedCdn = await startCdn(ctx, nestedDir);
+    const nestedParsed = await parseM3u8(nestedCdn.url('master.m3u8'));
+    await ctx.check(
+      '子目录变体的切片按子清单解析',
+      nestedParsed.segments.length === 2 && nestedParsed.segments.every(seg => seg.uri.includes('/v/n')),
+      nestedParsed.segments.map(seg => seg.uri).join(','),
+    );
+    const nestedTask = await batchServer.api.createRaw({
+      ...batchBase,
+      resourceType: 'other',
+      m3u8Url: nestedCdn.url('master.m3u8'),
+      outputName: 'nested.mp4',
+      concurrency: 2,
+    });
+    const nestedDone = await batchServer.api.waitFor(nestedTask.task.id, ['downloaded', 'failed']);
+    await ctx.check('子目录变体的任务能下载完成', nestedDone.status === 'downloaded', `${nestedDone.status} ${nestedDone.error || ''}`);
+
+    const ffzyBody = await batchServer.api.createRaw({
+      ...batchBase,
+      resourceType: 'ffzy',
+      videoAddress: watchFor(0),
+      ruyiMode: 'single',
+    });
+    await ctx.check(
+      '非凡资源单集建任务',
+      ffzyBody.task?.resourceType === 'ffzy' && ffzyBody.task?.m3u8Url === batchCdn.url('ep1.m3u8'),
+      JSON.stringify({ type: ffzyBody.task?.resourceType, url: ffzyBody.task?.m3u8Url }),
+    );
+    // 收尾：把后台还在跑的单集任务等完，避免用例结束后残留异步写盘
+    await Promise.all([
+      batchServer.api.waitFor(watchSingleBody.task.id, ['downloaded', 'failed']),
+      batchServer.api.waitFor(watchAutoBody.task.id, ['downloaded', 'failed']),
+      batchServer.api.waitFor(ffzyBody.task.id, ['downloaded', 'failed']),
+    ]);
   },
 };

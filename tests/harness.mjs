@@ -41,8 +41,13 @@ export const startCdn = async (ctx, dir, { delayMs = 0, failFirst = {} } = {}) =
   const port = nextPort();
   const hits = new Map();
   const server = http.createServer(async (req, res) => {
-    const name = decodeURIComponent(path.basename(String(req.url || '/').split('?')[0]));
+    const name = decodeURIComponent(String(req.url || '/').split('?')[0]).replace(/^\/+/, '');
     const target = path.join(dir, name);
+    if (!target.startsWith(path.resolve(dir))) {
+      res.writeHead(403);
+      res.end('forbidden');
+      return;
+    }
     const seen = (hits.get(name) || 0) + 1;
     hits.set(name, seen);
     if (seen <= (failFirst[name] || 0)) {

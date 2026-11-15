@@ -122,12 +122,15 @@ fnpack build -d .                              # 其他平台
 | --- | --- | --- |
 | `ruyi` | 如意资源 | `sourceUrl` → 链接自带地址；否则 `CMS_APIS.ruyi`（`cj.rycjapi.com`） |
 | `bfzy` | 暴风资源 | `sourceUrl` → 链接自带地址；否则 `CMS_APIS.bfzy`（`bfzyapi.com`） |
+| `ffzy` | 非凡资源 | `sourceUrl` → 链接自带地址；否则 `CMS_APIS.ffzy`（`cj.ffzyapi.com`） |
 | `other` | 直接 m3u8 | 用 `m3u8Url` + 可选 `baseUrl`；若贴的是播放页链接（`isCmsLink`），自动按采集站处理 |
 
 - 新版 LibreTV 播放页：`/watch?source=custom_1&id=<vod_id>&index=<0-based>&title=<剧名>&sourceUrl=<采集站API>`。`parsePlayerInput` 解析出 `apiBase`（`sourceUrl`，二次解码容错）、`id`、`index`，`pageKind='watch'`；`resolveCmsEpisodes` **优先用 `apiBase`**，所以 `custom_1` 这类自定义源无需登记也能用，`CMS_APIS` 只作为旧链接的兜底。
 - 旧版播放页 `player.html?...&url=` 仍走原逻辑（单集直接用 `url`）。
 - `/watch` 是前端渲染页面，抓不到 m3u8：解析不到剧集时直接报错，绝不把播放页当切片源。
-- 新增采集站：在 `CMS_APIS` 加一项、`isCmsType` 同步、前端 `resourceType` 下拉加选项即可，其余逻辑复用 `resolveCmsEpisodes`；链接自带 `sourceUrl` 的源甚至不需要改后端。
+- 新增采集站：`CMS_APIS` 加一项（`isCmsType` 按表键判断，自动生效）、前端 `resourceType` 下拉加选项、`main.js` 的 `CMS_TYPES` 与 `CMS_HOSTS` 各加一行，其余逻辑复用 `resolveCmsEpisodes`；链接自带 `sourceUrl` 的源甚至不需要改后端。
+- 非凡资源（`ffzy`）的 `vod_play_url` 有两路：`feifan` 是分享页，`ffm3u8` 是直链，`parseEpisodeList` 的 `knownDirect` 会优先选 `ffm3u8`。
+- 分享页兜底：`resolveMediaUrl(url)` 在解析前把非 `.m3u8` 的播放地址抓成页面，从脚本里的 `const url = "/xxx/index.m3u8?sign=.."` 取出并补全为绝对地址；任务里保存真实地址，重试不再重复抓页面。
 - 单集：`index` 决定取第几集（新版 `/watch` 与旧版 `player.html` 一致），没手填集名时输出命名为 `剧名_第N集.mp4`；全集：按 `id` 调 `${apiBase}?ac=videolist&ids=` 拿 `vod_play_url` 解析。
 - **部分**：先按全集解析出完整剧集列表，再用 `episodeSelect`（1-based 集号表达式：`1;2;4`、`2-6`、`1,3-5`，支持 `; , ， ； 空格` 与 `- ~`）取子集，`parseEpisodeSelection(expression, total)` 负责校验（超总集数报错），仍走同一 `batchId` 批次排队；`episodeIndex` 保留原集号。
 - 采集站任务 `baseUrlOverride` 为空，切片 base 由 m3u8 自身位置推导。

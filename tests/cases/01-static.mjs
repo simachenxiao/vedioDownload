@@ -69,6 +69,7 @@ export default {
       mainSrc.includes("$('#episodeSelectRow').hidden = mode !== 'partial'") && mainSrc.includes('body.episodeSelect ='),
     );
     await ctx.check('页面含队列视图与已下载统计', html.includes('data-filter="toMerge"') && html.includes('id="statVolume"'));
+    await ctx.check('资源类型含非凡资源且前端可识别', html.includes('value="ffzy"') && mainSrc.includes('ffzyapi.com'));
     await ctx.check(
       '粘贴播放页链接时自动识别资源类型',
       html.includes('id="sourceHint"') && mainSrc.includes('detectCmsType') && mainSrc.includes('bfzyapi.com'),

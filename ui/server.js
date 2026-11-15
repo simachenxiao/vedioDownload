@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,8 +27,10 @@ const FFMPEG_BIN = process.env.FFMPEG_BIN || '/usr/bin/ffmpeg';
 const CMS_APIS = {
   ruyi: 'https://cj.rycjapi.com/api.php/provide/vod',
   bfzy: 'https://bfzyapi.com/api.php/provide/vod',
+  ffzy: 'https://cj.ffzyapi.com/api.php/provide/vod',
 };
-const isCmsType = type => type === 'ruyi' || type === 'bfzy';
+// 采集站类型 = CMS_APIS 的键；新增采集站只改这张表
+const isCmsType = type => Object.prototype.hasOwnProperty.call(CMS_APIS, String(type || ''));
 
 const DEFAULT_CONFIG = {
   tempRoot: path.join(DATA_DIR, 'temp'),
@@ -59,7 +61,8 @@ const nowText = () => {
 };
 const log = (...args) => {
   const line = args.map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)).join(' ');
-  fs.appendFileSync(LOG_FILE, `${nowText()} ${line}\n`);
+  // 日志写盘失败不能反过来把进程带崩（例如数据目录被清理后仍有异步日志）
+  try { fs.appendFileSync(LOG_FILE, `${nowText()} ${line}\n`); } catch {}
   console.log('[vdl]', line);
 };
 const atomicWrite = (file, data) => {
@@ -338,14 +341,41 @@ const parseM3u8 = async (m3u8Url, baseUrlInput) => {
   return { baseUrl, segments, keys: [...keys.values()], source: text };
 };
 
-const parseBaseForTask = task => {
-  if (task.baseUrlOverride) return task.baseUrlOverride;
-  return isCmsType(task.resourceType) ? null : task.baseUrl;
+// 只有用户显式填写的 Base 才覆盖解析；自动推导的 base 交给 parseM3u8 按实际清单地址算，
+// 否则 master 里的子清单（如 3000k/hls/mixed.m3u8）会把切片地址解到父目录而 404
+const parseBaseForTask = task => task.baseUrlOverride || null;
+
+// 有些采集站（非凡等）给的播放地址是分享页，真实 m3u8 以相对路径写在页面脚本里
+const extractRelativeM3u8 = (text, pageUrl) => {
+  const re = /["']([^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?)["']/ig;
+  let m;
+  while ((m = re.exec(String(text || '')))) {
+    try { return new URL(m[1], pageUrl).toString(); } catch {}
+  }
+  return '';
+};
+
+const resolveMediaUrl = async rawUrl => {
+  const url = String(rawUrl || '').trim();
+  if (!isValidUrl(url) || /\.m3u8([?#]|$)/i.test(url)) return url;
+  let page = null;
+  try { page = await fetchText(url); } catch { return url; }
+  const text = page.text || '';
+  if (/^#EXTM3U/.test(text.trim())) return url;
+  const quoted = extractRelativeM3u8(text, page.finalUrl || url);
+  return quoted || extractM3u8Links(text)[0] || url;
 };
 
 const ensureTaskParsed = async task => {
   hydrateSegments(task);
   if (task.segments.length) return;
+  // 分享页地址在解析前换成真正的播放列表，任务里保存真实地址便于重试与排查
+  const mediaUrl = await resolveMediaUrl(task.m3u8Url);
+  if (mediaUrl !== task.m3u8Url) {
+    task.m3u8Url = mediaUrl;
+    if (!task.baseUrlOverride) task.baseUrl = defaultBase(mediaUrl);
+    updateTask(task);
+  }
   const parsed = await parseM3u8(task.m3u8Url, parseBaseForTask(task));
   task.baseUrl = parsed.baseUrl;
   task.segments = parsed.segments;
@@ -442,6 +472,7 @@ const isCmsLink = value => {
 const cmsTypeOfApi = apiBase => {
   const value = String(apiBase || '').toLowerCase();
   if (value.includes('bfzy')) return 'bfzy';
+  if (value.includes('ffzy') || value.includes('feifan')) return 'ffzy';
   if (value.includes('rycj') || value.includes('ruyi')) return 'ruyi';
   return '';
 };
@@ -452,7 +483,7 @@ const parseEpisodeList = (playUrl, playFrom = '', preferredSource = '') => {
   let selected = sources[0] || '';
   const preferred = froms.findIndex(name => String(name || '').toLowerCase() === String(preferredSource || '').toLowerCase());
   const direct = sources.find(source => extractM3u8Links(source).length > 0);
-  const knownDirect = froms.findIndex(name => ['rym3u8', 'bfzym3u8', 'm3u8'].includes(String(name || '').toLowerCase()));
+  const knownDirect = froms.findIndex(name => ['rym3u8', 'bfzym3u8', 'ffm3u8', 'ffzym3u8', 'm3u8'].includes(String(name || '').toLowerCase()));
   if (preferred >= 0 && sources[preferred] && extractM3u8Links(sources[preferred]).length > 0) selected = sources[preferred];
   else if (knownDirect >= 0 && sources[knownDirect]) selected = sources[knownDirect];
   else if (direct) selected = direct;
@@ -1692,6 +1723,7 @@ export {
   parsePlayerInput,
   parseM3u8,
   parseEpisodeList,
+  resolveMediaUrl,
   parseEpisodeSelection,
   resolveCmsEpisodes,
   createTask,

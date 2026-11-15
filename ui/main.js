@@ -418,9 +418,12 @@ const refresh = async () => {
   }
 };
 
+const CMS_TYPES = ['ruyi', 'bfzy', 'ffzy'];
+const isCmsResource = type => CMS_TYPES.includes(type);
+
 const syncSourceFields = () => {
   const type = $('#resourceType').value;
-  const isCms = type === 'ruyi' || type === 'bfzy';
+  const isCms = isCmsResource(type);
   $('#ruyiFields').hidden = !isCms;
   $('#otherFields').hidden = isCms;
   $('#videoAddress').required = isCms;
@@ -442,7 +445,7 @@ const syncRuyiMode = () => {
 };
 
 // 新版 LibreTV 的 /watch 链接把采集站地址放在 sourceUrl 里，贴链接即可自动选对资源类型
-const CMS_HOSTS = [['bfzyapi.com', 'bfzy'], ['rycjapi.com', 'ruyi']];
+const CMS_HOSTS = [['bfzyapi.com', 'bfzy'], ['ffzyapi.com', 'ffzy'], ['rycjapi.com', 'ruyi']];
 const detectCmsType = value => {
   const text = String(value || '').toLowerCase();
   const known = CMS_HOSTS.find(([host]) => text.includes(host));
@@ -502,7 +505,7 @@ form.addEventListener('submit', async event => {
       autoMerge: $('#autoMerge').checked,
       removeAds: $('#removeAds').checked,
     };
-    if (resourceType === 'ruyi' || resourceType === 'bfzy') {
+    if (isCmsResource(resourceType)) {
       body.videoAddress = $('#videoAddress').value.trim();
       body.sourcePage = $('#sourcePage').value;
       body.ruyiMode = $('#ruyiMode').value;
