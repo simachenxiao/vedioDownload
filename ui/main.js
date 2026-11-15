@@ -441,8 +441,38 @@ const syncRuyiMode = () => {
   $('#episodeSelect').required = cmsVisible && mode === 'partial';
 };
 
+// 新版 LibreTV 的 /watch 链接把采集站地址放在 sourceUrl 里，贴链接即可自动选对资源类型
+const CMS_HOSTS = [['bfzyapi.com', 'bfzy'], ['rycjapi.com', 'ruyi']];
+const detectCmsType = value => {
+  const text = String(value || '').toLowerCase();
+  const known = CMS_HOSTS.find(([host]) => text.includes(host));
+  if (known) return known[1];
+  if (/[?&]sourceurl=/.test(text) || /\/watch\?/.test(text) || /player\.html\?/.test(text)) return 'bfzy';
+  return '';
+};
+
+const syncSourceHint = () => {
+  const value = $('#videoAddress').value.trim();
+  const hint = $('#sourceHint');
+  const type = detectCmsType(value);
+  if (!value || !type) {
+    hint.hidden = true;
+    hint.textContent = '';
+    return;
+  }
+  const label = $(`#resourceType option[value="${type}"]`)?.textContent || type;
+  const raw = /sourceUrl=([^&]+)/i.exec(value)?.[1] || '';
+  let host = '';
+  if (raw) {
+    try { host = new URL(decodeURIComponent(raw)).host; } catch {}
+  }
+  hint.textContent = host ? `已识别：${label} · ${host}` : `已识别：${label}`;
+  hint.hidden = false;
+};
+
 const openTaskDialog = async () => {
   form.reset();
+  $('#sourceHint').hidden = true;
   await loadDefaults().catch(() => {});
   $('#resourceType').value = 'ruyi';
   $('#ruyiMode').value = 'single';
@@ -654,6 +684,14 @@ $('#openAddTask').addEventListener('click', openTaskDialog);
 $('#closePlayer').addEventListener('click', closePlayer);
 $('#closePlayerBtn').addEventListener('click', closePlayer);
 $('#resourceType').addEventListener('change', syncSourceFields);
+$('#videoAddress').addEventListener('input', () => {
+  const type = detectCmsType($('#videoAddress').value);
+  if (type && $('#resourceType').value !== type) {
+    $('#resourceType').value = type;
+    syncSourceFields();
+  }
+  syncSourceHint();
+});
 $('#ruyiMode').addEventListener('change', syncRuyiMode);
 $('#closeTaskDialog').addEventListener('click', () => taskDialog.close());
 $('#cancelTask').addEventListener('click', () => taskDialog.close());

@@ -1,7 +1,7 @@
 // 用例 09：采集站地址解析与 m3u8 解析（离线，不依赖外网）
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL, ROOT, startCdn, startServer, writeFakePlaylist } from '../harness.mjs';
+import { pathToFileURL, ROOT, startCdn, startCms, startServer, writeFakePlaylist } from '../harness.mjs';
 
 /** 以 VDL_NO_START=1 导入 server.js，仅使用其导出的解析函数 */
 const importServer = async dataDir => {
@@ -29,6 +29,7 @@ export default {
     'parseM3u8 选择最高码率 master、解析 EXT-X-KEY',
     '加密流下载密钥 + 本地清单写入 KEY',
     '全集/部分模式批量建任务、集号保留与批次排队',
+    '新版 LibreTV /watch 链接（sourceUrl + id + index）解析与自动识别',
   ],
   async run(ctx) {
     const mod = await importServer(ctx.temp('cms-import'));
@@ -238,5 +239,81 @@ export default {
       }),
     });
     await ctx.check('部分模式未填集数时报错', emptySelect.res.status === 500 && /填写要下载的集数/.test(String(emptySelect.body.error)), JSON.stringify(emptySelect.body));
+
+    // 新版 LibreTV /watch 链接：source=custom_1 + id + index + sourceUrl（采集站地址写在链接里）
+    const cms = await startCms(ctx, {
+      name: '玫瑰战争',
+      episodes: [
+        { name: '第1集', url: batchCdn.url('ep1.m3u8') },
+        { name: '第2集', url: batchCdn.url('ep2.m3u8') },
+        { name: '第3集', url: batchCdn.url('ep1.m3u8') },
+      ],
+    });
+    const watchFor = (index = 0, id = 171653) => `http://192.168.31.8:8899/watch?source=custom_1&id=${id}&index=${index}`
+      + `&title=${encodeURIComponent('玫瑰战争')}&sourceUrl=${encodeURIComponent(cms.api)}`;
+
+    const watchInput = mod.parsePlayerInput(watchFor(0));
+    await ctx.check(
+      '解析 /watch 链接：识别页面类型与采集站地址',
+      watchInput.pageKind === 'watch' && watchInput.apiBase === cms.api && watchInput.id === '171653' && watchInput.index === 0,
+      JSON.stringify({ kind: watchInput.pageKind, api: watchInput.apiBase, id: watchInput.id, index: watchInput.index }),
+    );
+
+    const watchAll = await resolveCmsEpisodes(watchFor(0), 'auto', 'all', 'bfzy');
+    await ctx.check(
+      '按 sourceUrl 拉采集站并解析出全集',
+      watchAll.title === '玫瑰战争' && watchAll.episodes.length === 3 && watchAll.episodes[1].url === batchCdn.url('ep2.m3u8'),
+      `${watchAll.title}/${watchAll.episodes.length}`,
+    );
+    await ctx.check('采集站请求带上 id 与 ac=videolist', cms.requests.some(q => /ids=171653/.test(q) && /ac=videolist/.test(q)), cms.requests.join(' | '));
+
+    const watchSingleBody = await batchServer.api.createRaw({
+      ...batchBase,
+      resourceType: 'bfzy',
+      videoAddress: watchFor(1),
+      ruyiMode: 'single',
+    });
+    await ctx.check(
+      '单集：按 index 取对应集并用「剧名_集名」命名',
+      watchSingleBody.task?.m3u8Url === batchCdn.url('ep2.m3u8') && watchSingleBody.task?.outputName === '玫瑰战争_第2集.mp4',
+      JSON.stringify({ url: watchSingleBody.task?.m3u8Url, name: watchSingleBody.task?.outputName }),
+    );
+
+    const watchAutoBody = await batchServer.api.createRaw({
+      ...batchBase,
+      resourceType: 'other',
+      videoAddress: watchFor(0),
+      ruyiMode: 'single',
+    });
+    await ctx.check(
+      '资源类型选「其他」时按链接自动走采集站',
+      watchAutoBody.task?.m3u8Url === batchCdn.url('ep1.m3u8') && watchAutoBody.task?.resourceType === 'bfzy',
+      JSON.stringify({ url: watchAutoBody.task?.m3u8Url, type: watchAutoBody.task?.resourceType }),
+    );
+
+    const watchBatchBody = await batchServer.api.createRaw({
+      ...batchBase,
+      resourceType: 'bfzy',
+      videoAddress: watchFor(0),
+      ruyiMode: 'all',
+      taskConcurrency: 3,
+    });
+    await ctx.check(
+      '全集：从 /watch 链接建批次并保留集名',
+      watchBatchBody.tasks?.length === 3
+        && watchBatchBody.tasks.every(t => t.batchTitle === '玫瑰战争')
+        && watchBatchBody.tasks.map(t => t.episodeName).join(',') === '第1集,第2集,第3集',
+      JSON.stringify((watchBatchBody.tasks || []).map(t => `${t.batchTitle}/${t.episodeName}`)),
+    );
+    const watchDone = await Promise.all((watchBatchBody.tasks || []).map(t => batchServer.api.waitFor(t.id, ['downloaded', 'failed'])));
+    await ctx.check('从播放页链接建的批次可下载完成', watchDone.every(t => t.status === 'downloaded'), watchDone.map(t => t.status).join(','));
+
+    let watchError = '';
+    try {
+      await resolveCmsEpisodes(watchFor(0, '') , 'auto', 'single', 'bfzy');
+    } catch (e) {
+      watchError = e.message;
+    }
+    await ctx.check('播放页链接缺 id 时报可读错误', /未从采集站解析到剧集|id=/.test(watchError), watchError);
   },
 };

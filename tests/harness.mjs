@@ -70,6 +70,28 @@ export const startCdn = async (ctx, dir, { delayMs = 0, failFirst = {} } = {}) =
   };
 };
 
+/** 假采集站：按 ac=videolist&ids= 返回一条剧集 JSON，用来测播放页链接解析 */
+export const startCms = async (ctx, { name = '测试剧', from = 'bfzym3u8', episodes = [] } = {}) => {
+  const port = nextPort();
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    requests.push(url.search);
+    const ids = url.searchParams.get('ids') || '';
+    const playUrl = episodes.map((episode, index) => `${episode.name || `第${index + 1}集`}$${episode.url}`).join('#');
+    const body = JSON.stringify({
+      code: 1,
+      list: ids ? [{ vod_id: ids, vod_name: name, vod_play_from: from, vod_play_url: playUrl }] : [],
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(body);
+  });
+  const close = () => new Promise(resolve => server.close(() => resolve()));
+  ctx.onCleanup(close);
+  await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
+  return { port, requests, close, api: `http://127.0.0.1:${port}/api.php/provide/vod` };
+};
+
 /** REST 客户端；json() 在非 2xx 时抛错，request() 返回原始响应 */
 export const makeClient = base => {
   const request = async (p, options = {}) => {

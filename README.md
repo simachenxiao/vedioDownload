@@ -5,7 +5,7 @@ VDL 是一个飞牛 NAS m3u8 视频下载应用，支持填写 m3u8 地址、切
 ## 功能
 
 - 支持三种资源类型：其他（直接填 m3u8）、如意资源、暴风资源
-- 采集站播放器地址自动解析单集 / 部分 / 全集
+- 采集站播放页地址自动解析单集 / 部分 / 全集（新版 `/watch` 与旧版 `player.html` 均可，贴链接自动识别资源类型）
 - 部分下载支持按集号选择：`1;2;4`、`2-6`、`1,3-5`
 - 创建 m3u8 下载任务
 - 自动解析切片并并发下载
@@ -20,12 +20,18 @@ VDL 是一个飞牛 NAS m3u8 视频下载应用，支持填写 m3u8 地址、切
 
 | 类型 | 输入 | 说明 |
 | --- | --- | --- |
-| 如意资源 | 如意/LibreTV 播放器地址 | 采集站 API `cj.rycjapi.com`，支持单集 / 全集 |
-| 暴风资源 | 暴风（bfzy）播放器地址 | 采集站 API `bfzyapi.com`，支持单集 / 全集 |
-| 其他 | m3u8 地址 + 可选切片 Base 地址 | 直接按 m3u8 下载 |
+| 如意资源 | 如意/LibreTV 播放页地址 | 采集站 API `cj.rycjapi.com`，支持单集 / 部分 / 全集 |
+| 暴风资源 | 暴风（bfzy）播放页地址 | 采集站 API `bfzyapi.com`，支持单集 / 部分 / 全集 |
+| 其他 | m3u8 地址 + 可选切片 Base 地址（贴播放页链接时自动按采集站处理） | 直接按 m3u8 下载 |
 
-播放器地址形如 `http://host/player.html?id=161017&source=bfzy&url=...&index=0`。
-单集模式直接下载 `url` 参数指定的一集；全集模式根据 `id` 调用对应采集站 API 解析全部剧集后批量排队下载。
+播放页地址有两种，两种都能直接贴：
+
+- **新版 LibreTV**：`http://host/watch?source=custom_1&id=171653&index=0&title=剧名&sourceUrl=https%3A%2F%2Fbfzyapi.com%2Fapi.php%2Fprovide%2Fvod`
+  采集站地址直接写在 `sourceUrl` 里（`custom_1` 等自定义源也能用），`id` 拉剧集、`index` 选单集。
+- **旧版播放器**：`http://host/player.html?id=161017&source=bfzy&url=...&index=0`，单集直接用 `url` 参数。
+
+单集模式按 `index` 取对应集（命名 `剧名_第N集.mp4`）；全集/部分模式按 `id` 调采集站 API 解析全部剧集后批量排队。
+粘贴链接时资源类型会自动切到对应采集站，并在输入框下方提示识别结果。
 
 ## 本地运行
 

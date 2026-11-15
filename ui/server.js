@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const VERSION = '0.2.7';
+const VERSION = '0.3.0';
 const USER_AGENT = `VDL/${VERSION}`;
 const PKGVAR = process.env.TRM_PKGVAR || process.env.TRIM_PKGVAR || null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -402,18 +402,48 @@ const parsePlayerInput = value => {
   let videoUrl = u.searchParams.get('url') || raw;
   try { videoUrl = decodeURIComponent(videoUrl); } catch {}
   const pathName = u.pathname.toLowerCase();
+  // 新版 LibreTV 的 /watch 链接把采集站地址直接写在 sourceUrl 里（source=custom_1 等自定义源），
+  // 有它就不用依赖 CMS_APIS 里的固定键
+  let apiBase = u.searchParams.get('sourceUrl') || u.searchParams.get('source_url') || '';
+  if (/%3A%2F%2F/i.test(apiBase)) {
+    try { apiBase = decodeURIComponent(apiBase); } catch {}
+  }
+  if (!isValidUrl(apiBase)) apiBase = '';
   return {
     rawUrl: raw,
     videoUrl,
     hasUrlParam: u.searchParams.has('url'),
+    apiBase,
     id: u.searchParams.get('id') || '',
     source: u.searchParams.get('source') || '',
     title: u.searchParams.get('title') || '',
     index: parseInt(u.searchParams.get('index') || '0', 10) || 0,
     episodesParam: u.searchParams.get('episodes') || '',
     origin: `${u.protocol}//${u.host}`,
-    pageKind: pathName.includes('player.html') ? 'libretv' : (pathName.includes('player') ? 'kvedio' : 'direct'),
+    pageKind: pathName.includes('player.html') ? 'libretv'
+      : (pathName.includes('watch') ? 'watch' : (pathName.includes('player') ? 'kvedio' : 'direct')),
   };
+};
+
+// 播放页链接（新版 LibreTV /watch 或旧 player）：带 id，且带 sourceUrl 或走在 watch/player 路径上
+const isCmsLink = value => {
+  try {
+    const u = new URL(String(value || '').trim());
+    if (u.searchParams.get('sourceUrl') || u.searchParams.get('source_url')) return true;
+    if (!u.searchParams.get('id')) return false;
+    const page = u.pathname.toLowerCase();
+    return page.includes('watch') || page.includes('player');
+  } catch {
+    return false;
+  }
+};
+
+// 从采集站 API 地址反推资源类型，用于并发与展示
+const cmsTypeOfApi = apiBase => {
+  const value = String(apiBase || '').toLowerCase();
+  if (value.includes('bfzy')) return 'bfzy';
+  if (value.includes('rycj') || value.includes('ruyi')) return 'ruyi';
+  return '';
 };
 
 const parseEpisodeList = (playUrl, playFrom = '', preferredSource = '') => {
@@ -478,15 +508,21 @@ const resolveCmsEpisodes = async (videoAddress, sourcePage = 'auto', mode = 'sin
   }
 
   const sourceKey = String(input.source || '').toLowerCase();
-  let apiBase = CMS_APIS[sourceKey] || null;
+  // sourceUrl 优先：新版播放页自带采集站地址，自定义源（custom_1…）也能直接用
+  let apiBase = input.apiBase || CMS_APIS[sourceKey] || null;
   if (!apiBase && isCmsType(resourceType) && (!sourceKey || isCmsType(sourceKey))) apiBase = CMS_APIS[resourceType];
   if (input.id && apiBase) {
-    const detail = await fetchJson(`${apiBase}?ac=videolist&ids=${encodeURIComponent(input.id)}`);
+    const query = apiBase.includes('?') ? '&' : '?';
+    const detail = await fetchJson(`${apiBase}${query}ac=videolist&ids=${encodeURIComponent(input.id)}`);
     const item = Array.isArray(detail.list) ? detail.list[0] : null;
     if (item?.vod_play_url) {
       const episodes = parseEpisodeList(item.vod_play_url, item.vod_play_from, input.source);
       if (episodes.length) return { title: item.vod_name || input.title || resourceType, episodes };
     }
+  }
+  // /watch 是前端渲染的播放页，抓不到 m3u8；解析不到就明确报错，不要拿播放页当切片源
+  if (input.pageKind === 'watch') {
+    throw new Error(`未从采集站解析到剧集（id=${input.id || '空'}），请检查链接里的 sourceUrl 是否可用`);
   }
 
   if (isValidUrl(input.videoUrl)) {
@@ -1096,25 +1132,35 @@ const createM3u8Task = async (body, options = {}) => {
 };
 
 const createTask = async body => {
-  const resourceType = String(body.resourceType || 'other');
+  const videoAddress = String(body.videoAddress || body.m3u8Url || '').trim();
+  let resourceType = String(body.resourceType || 'other');
+  // 选了「其他」但贴的是播放页链接：自动按采集站处理，sourceUrl 决定用哪个采集站
+  if (!isCmsType(resourceType) && isCmsLink(videoAddress)) {
+    let parsed = null;
+    try { parsed = parsePlayerInput(videoAddress); } catch {}
+    resourceType = cmsTypeOfApi(parsed?.apiBase) || 'bfzy';
+  }
   if (!isCmsType(resourceType)) return { task: await createM3u8Task(body) };
 
-  const videoAddress = String(body.videoAddress || body.m3u8Url || '').trim();
   const mode = body.ruyiMode === 'all' ? 'all' : (body.ruyiMode === 'partial' ? 'partial' : 'single');
   // 部分模式同样需要完整剧集列表，再按用户填写的集号取子集
   const resolved = await resolveCmsEpisodes(videoAddress, body.sourcePage, mode === 'single' ? 'single' : 'all', resourceType);
-  if (!resolved.episodes.length) throw new Error('no ruyi episodes found');
+  if (!resolved.episodes.length) throw new Error('未从播放页解析到剧集，请检查链接或采集站是否可用');
 
   if (mode === 'single') {
     const parsedInput = parsePlayerInput(videoAddress);
     const episode = resolved.episodes[Math.min(Math.max(parsedInput.index || 0, 0), resolved.episodes.length - 1)] || resolved.episodes[0];
-    const name = String(body.episodeName || episode.name || resolved.title || '').trim();
+    const given = String(body.episodeName || '').trim();
+    const episodeName = given || episode.name || `第${String((parsedInput.index || 0) + 1).padStart(2, '0')}集`;
+    // 没手填名称时按「剧名_集名」命名，与全集模式保持一致
+    const title = String(resolved.title || '').trim();
+    const name = given || (title && !episodeName.startsWith(title) ? `${title}_${episodeName}` : episodeName);
     return {
       task: await createM3u8Task(body, {
         m3u8Url: episode.url,
-        outputName: name || body.outputName || episode.name,
+        outputName: name || body.outputName,
         resourceType,
-        episodeName: name || episode.name,
+        episodeName,
         episodeIndex: resolved.episodes.indexOf(episode),
       }),
     };
@@ -1642,6 +1688,8 @@ const main = () => {
 export {
   CMS_APIS,
   isCmsType,
+  isCmsLink,
+  parsePlayerInput,
   parseM3u8,
   parseEpisodeList,
   parseEpisodeSelection,

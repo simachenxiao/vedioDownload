@@ -69,6 +69,10 @@ export default {
       mainSrc.includes("$('#episodeSelectRow').hidden = mode !== 'partial'") && mainSrc.includes('body.episodeSelect ='),
     );
     await ctx.check('页面含队列视图与已下载统计', html.includes('data-filter="toMerge"') && html.includes('id="statVolume"'));
+    await ctx.check(
+      '粘贴播放页链接时自动识别资源类型',
+      html.includes('id="sourceHint"') && mainSrc.includes('detectCmsType') && mainSrc.includes('bfzyapi.com'),
+    );
     await ctx.check('前端渲染切片状态条', mainSrc.includes('segmentStrip') && html.includes('id="taskList"'));
     await ctx.check('自托管 Geist 字体存在', fs.existsSync(path.join(ROOT, 'ui', 'fonts', 'geist-latin.woff2')));
 
